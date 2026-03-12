@@ -1,5 +1,6 @@
 package com.yourname.womensafety.data
 
+import android.app.Application
 import android.content.Context
 import com.yourname.womensafety.data.local.TokenManager
 import com.yourname.womensafety.data.network.RetrofitClient
@@ -14,6 +15,10 @@ object AppServiceLocator {
 
     private lateinit var _tokenManager: TokenManager
     val tokenManager: TokenManager get() = _tokenManager
+
+    private lateinit var _application: Application
+    /** Application context — used by ViewModels that need a Context (e.g. IotViewModel). */
+    val application: Application get() = _application
 
     val authRepository: AuthRepository by lazy {
         AuthRepository(
@@ -50,7 +55,13 @@ object AppServiceLocator {
         SupportRepository(RetrofitClient.createService<SupportApiService>(_tokenManager))
     }
 
+    val deviceRepository: DeviceRepository by lazy {
+        DeviceRepository(RetrofitClient.createService<DeviceApiService>(_tokenManager))
+    }
+
     fun init(context: Context) {
-        _tokenManager = TokenManager(context.applicationContext)
+        _tokenManager  = TokenManager(context.applicationContext)
+        _application   = context.applicationContext as Application
     }
 }
+

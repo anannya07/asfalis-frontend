@@ -77,11 +77,25 @@ class AutoSosManager(
     private var isWindowBeingSent = false
     private var cooldownJob: Job? = null
 
+    /**
+     * True only while [start] has been called and [stop] has not.
+     * Checked inside [sendWindowToBackend] to prevent a late-arriving coroutine
+     * from sending sensor data after the user disarms the system.
+     * Declared @Volatile so writes from any thread are immediately visible.
+     */
+    @Volatile private var isArmed = false
+
     private val sensorListener = object : SensorEventListener {
         override fun onSensorChanged(event: SensorEvent) {
             val x = event.values[0]
             val y = event.values[1]
             val z = event.values[2]
+
+            // --- DATA COLLECTION START ---
+            val gravity = 9.80665f
+            // Set label to 0 for SAFE data, 1 for DANGER data
+            Log.d("REAL_DATA_CSV", "${x/gravity},${y/gravity},${z/gravity},accelerometer,0,${System.currentTimeMillis()}")
+            // --- DATA COLLECTION END ---
 
             // Add to rolling buffer
             if (rollingBuffer.size >= WINDOW_SIZE) rollingBuffer.removeFirst()
@@ -89,8 +103,15 @@ class AutoSosManager(
 
             // Stage 1: magnitude threshold guard
             val magnitude = sqrt(x * x + y * y + z * z)
-            if (magnitude > magnitudeThreshold && !isCooldownActive && !isWindowBeingSent) {
+            if (magnitude > magnitudeThreshold) {
+                Log.d(TAG, "Threshold exceeded: magnitude=%.2f > threshold=%.2f (%s) " .format(
+                    magnitude, magnitudeThreshold, activeSensorType
+                ) + "isArmed=$isArmed isCooldown=$isCooldownActive isSending=$isWindowBeingSent " +
+                    "bufferSize=${rollingBuffer.size}")
+            }
+            if (magnitude > magnitudeThreshold && !isCooldownActive && !isWindowBeingSent && isArmed) {
                 if (rollingBuffer.size >= 3) {
+                    Log.w(TAG, "Stage 1 passed — sending ${rollingBuffer.size} readings to /predict")
                     sendWindowToBackend(rollingBuffer.toList())
                 }
             }
@@ -106,6 +127,7 @@ class AutoSosManager(
      * @param sensorType  "accelerometer" | "gyroscope"
      */
     fun start(sensitivity: String = "medium", sensorType: String = "accelerometer") {
+        isArmed = true
         activeSensorType = sensorType
         magnitudeThreshold = when (sensitivity.lowercase()) {
             "high" -> 12f
@@ -129,6 +151,7 @@ class AutoSosManager(
 
     /** Stop monitoring and clear state. */
     fun stop() {
+        isArmed = false          // disarm first so any in-flight coroutine bails early
         sensorManager.unregisterListener(sensorListener)
         rollingBuffer.clear()
         isCooldownActive = false
@@ -215,9 +238,18 @@ class AutoSosManager(
     private fun sendWindowToBackend(snapshot: List<List<Float>>) {
         isWindowBeingSent = true
         scope.launch {
+            // Guard: the system may have been disarmed between the time the sensor
+            // callback fired and this coroutine started.  Bail out immediately.
+            if (!isArmed) {
+                Log.w(TAG, "sendWindowToBackend: system DISARMED — aborting (snapshot discarded)")
+                isWindowBeingSent = false
+                return@launch
+            }
+            Log.d(TAG, "Sending window (${snapshot.size} readings) to /predict — " +
+                    "sensorType=$activeSensorType threshold=$magnitudeThreshold m/s²")
             try {
                 val loc = getCurrentLocation()
-                Log.d(TAG, "Sending window (${snapshot.size} readings) to /predict, location=${loc.address}, lat=${loc.latitude}, lng=${loc.longitude}")
+                Log.d(TAG, "Location: address=${loc.address} lat=${loc.latitude} lng=${loc.longitude}")
                 when (val result = protectionRepository.predict(
                     window = snapshot,
                     sensorType = activeSensorType,
@@ -227,13 +259,24 @@ class AutoSosManager(
                 )) {
                     is NetworkResult.Success -> {
                         val pred = result.data
-                        Log.d(TAG, "Prediction: ${pred.prediction}, confidence: ${pred.confidence}, sos_sent: ${pred.sosSent}")
+                        Log.d(TAG, "Prediction: prediction=${pred.prediction} confidence=${pred.confidence} " +
+                                "sos_sent=${pred.sosSent} alertId=${pred.alertId} " +
+                                "message='${pred.message}' isArmed=$isArmed")
                         if (pred.sosSent && pred.alertId != null) {
-                            // Backend confirmed danger — start 10-min cooldown and emit events
-                            startCooldown()
-                            _cooldownStarted.emit(Unit)
-                            val triggerType = if (activeSensorType == "gyroscope") "auto_shake" else "auto_fall"
-                            _dangerDetected.emit(DangerEvent(pred.alertId, triggerType))
+                            if (!isArmed) {
+                                // System was disarmed while the network call was in-flight.
+                                // The backend already sent the SOS — log prominently for debugging.
+                                Log.e(TAG, "BUG: backend returned sosSent=true but system is DISARMED. " +
+                                        "alertId=${pred.alertId} triggerType=$activeSensorType " +
+                                        "— suppressing UI navigation to avoid phantom SOS.")
+                            } else {
+                                // Backend confirmed danger — start 10-min cooldown and emit events
+                                startCooldown()
+                                _cooldownStarted.emit(Unit)
+                                val triggerType = if (activeSensorType == "gyroscope") "auto_shake" else "auto_fall"
+                                Log.w(TAG, "Danger confirmed: alertId=${pred.alertId} triggerType=$triggerType")
+                                _dangerDetected.emit(DangerEvent(pred.alertId, triggerType))
+                            }
                         } else if (pred.retryAfterSeconds != null && pred.retryAfterSeconds > 0) {
                             // Rate-limited by backend — sync local cooldown to backend's remaining window
                             val remainingMs = pred.retryAfterSeconds * 1_000L

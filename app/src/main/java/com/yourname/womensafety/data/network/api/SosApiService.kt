@@ -14,7 +14,7 @@ interface SosApiService {
     @POST("sos/send-now")
     suspend fun sendSosNow(
         @Body request: SosSendNowRequest
-    ): Response<ApiResponse<SosAlertData>>
+    ): Response<ApiResponse<Unit>>   // backend returns delivery_report, not data
 
     @POST("sos/cancel")
     suspend fun cancelSos(
@@ -24,7 +24,7 @@ interface SosApiService {
     @POST("sos/safe")
     suspend fun markUserSafe(
         @Body request: SosSafeRequest
-    ): Response<ApiResponse<Unit>>
+    ): Response<ApiResponse<SosSafeData>>
 
     @GET("sos/history")
     suspend fun getSosHistory(): Response<ApiResponse<List<SosHistoryItem>>>

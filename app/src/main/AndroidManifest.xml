@@ -14,6 +14,18 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION" />
 
+    <!-- ── IoT Wearable (ESP32 Classic Bluetooth) ───────────────────────── -->
+    <!-- Legacy permissions required on Android ≤ 11 (API 30) -->
+    <uses-permission android:name="android.permission.BLUETOOTH"
+        android:maxSdkVersion="30" />
+    <uses-permission android:name="android.permission.BLUETOOTH_ADMIN"
+        android:maxSdkVersion="30" />
+    <!-- Runtime permissions required on Android 12+ (API 31+) -->
+    <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
+    <uses-permission android:name="android.permission.BLUETOOTH_SCAN" />
+    <!-- Foreground service type for the BT listener -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
+
     <application
         android:name=".AsfalisApplication"
         android:allowBackup="true"
@@ -44,6 +56,12 @@
                 <action android:name="com.google.firebase.MESSAGING_EVENT" />
             </intent-filter>
         </service>
+
+        <!-- IoT Wearable — Classic Bluetooth SPP foreground listener -->
+        <service
+            android:name=".service.IotWearableService"
+            android:exported="false"
+            android:foregroundServiceType="connectedDevice" />
 
     </application>
 

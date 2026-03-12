@@ -1,5 +1,10 @@
 package com.yourname.womensafety.ui.screens
 
+import android.Manifest
+import android.bluetooth.BluetoothDevice
+import android.os.Build
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.core.*
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -9,8 +14,8 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.BluetoothSearching
 import androidx.compose.material.icons.filled.Bluetooth
-import androidx.compose.material.icons.filled.BluetoothSearching
 import androidx.compose.material.icons.outlined.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -28,6 +33,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -36,7 +42,7 @@ import androidx.navigation.NavController
 import com.yourname.womensafety.R
 import com.yourname.womensafety.ui.viewmodels.AutoSosViewModel
 import com.yourname.womensafety.ui.viewmodels.DashboardViewModel
-import kotlinx.coroutines.delay
+import com.yourname.womensafety.ui.viewmodels.IotViewModel
 import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -46,20 +52,48 @@ fun DashboardScreen(navController: NavController) {
         factory = DashboardViewModel.Factory
     )
     val autoSosViewModel: AutoSosViewModel = viewModel()
+    val iotViewModel: IotViewModel = viewModel(factory = IotViewModel.Factory)
 
     val isProtectionOn by dashboardViewModel.isProtectionActive.collectAsStateWithLifecycle()
     val userName by dashboardViewModel.userName.collectAsStateWithLifecycle()
     val autoSosMonitoring by dashboardViewModel.autoSosMonitoring.collectAsStateWithLifecycle()
     val shakeSensitivity by dashboardViewModel.shakeSensitivity.collectAsStateWithLifecycle()
     val sensorActive by autoSosViewModel.isActive.collectAsStateWithLifecycle()
-    var isBraceletConnected by remember { mutableStateOf(false) }
+
+    // IoT wearable state
+    val iotConnectionState by iotViewModel.connectionState.collectAsStateWithLifecycle()
+    val iotFoundDevice by iotViewModel.foundDevice.collectAsStateWithLifecycle()
+    val iotError by iotViewModel.errorMessage.collectAsStateWithLifecycle()
+    val deviceDistance by iotViewModel.deviceDistance.collectAsStateWithLifecycle()
+    val isBraceletConnected = iotConnectionState == IotViewModel.ConnectionState.CONNECTED
+    val isIotConnecting     = iotConnectionState == IotViewModel.ConnectionState.CONNECTING
+
     val snackbarHostState = remember { SnackbarHostState() }
     val context = LocalContext.current
 
-    // Load protection status and settings on startup
-    LaunchedEffect(Unit) {
-        dashboardViewModel.loadProtectionStatus()
-        dashboardViewModel.loadGreeting()
+    // Bluetooth runtime permission launcher (Android 12+)
+    val btPermissions = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+        arrayOf(Manifest.permission.BLUETOOTH_CONNECT, Manifest.permission.BLUETOOTH_SCAN)
+    } else {
+        arrayOf(Manifest.permission.BLUETOOTH, Manifest.permission.BLUETOOTH_ADMIN)
+    }
+    var showSearchSheet by remember { mutableStateOf(false) }
+    val sheetState = rememberModalBottomSheetState()
+    val scope = rememberCoroutineScope()
+
+    val btPermissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestMultiplePermissions()
+    ) { granted ->
+        if (granted.values.all { it }) {
+            iotViewModel.scanForDevice()
+            showSearchSheet = true
+        } else {
+            Toast.makeText(
+                context,
+                "Bluetooth permission required to connect the wearable",
+                Toast.LENGTH_SHORT
+            ).show()
+        }
     }
 
     // Start/stop Auto SOS sensor monitoring whenever the combined flag changes
@@ -92,11 +126,13 @@ fun DashboardScreen(navController: NavController) {
         }
     }
 
-    var showSearchSheet by remember { mutableStateOf(false) }
-    val sheetState = rememberModalBottomSheetState()
-    val scope = rememberCoroutineScope()
-    val errorMessage by dashboardViewModel.errorMessage.collectAsStateWithLifecycle()
+    // Load protection status and settings on startup
+    LaunchedEffect(Unit) {
+        dashboardViewModel.loadProtectionStatus()
+        dashboardViewModel.loadGreeting()
+    }
 
+    val errorMessage by dashboardViewModel.errorMessage.collectAsStateWithLifecycle()
     val haptic = LocalHapticFeedback.current
     val infiniteTransition = rememberInfiniteTransition(label = "dashboard_anims")
 
@@ -208,7 +244,8 @@ fun DashboardScreen(navController: NavController) {
                     .height(90.dp)
                     .clickable {
                         haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
-                        showSearchSheet = true
+                        // Scan for device before showing the sheet — triggers BT permission if needed
+                        btPermissionLauncher.launch(btPermissions)
                     },
                 color = Color.White.copy(0.05f),
                 shape = RoundedCornerShape(24.dp),
@@ -220,8 +257,45 @@ fun DashboardScreen(navController: NavController) {
                     }
                     Spacer(Modifier.width(16.dp))
                     Column(modifier = Modifier.weight(1f)) {
-                        Text(if (isBraceletConnected) "Bracelet Connected" else "Not Connected", color = Color.White, fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
-                        Text(if (isBraceletConnected) "Asfalis Band v1.0" else "Tap to sync device", color = Color.Gray, fontSize = 13.sp)
+                        Text(
+                            when (iotConnectionState) {
+                                IotViewModel.ConnectionState.CONNECTED   -> "Bracelet Connected"
+                                IotViewModel.ConnectionState.CONNECTING  -> "Connecting…"
+                                IotViewModel.ConnectionState.ERROR       -> "Connection Failed"
+                                else                                     -> "Not Connected"
+                            },
+                            color = Color.White, fontSize = 15.sp, fontWeight = FontWeight.SemiBold
+                        )
+                        Text(
+                            when (iotConnectionState) {
+                                IotViewModel.ConnectionState.CONNECTED  -> "ESP32 SOS Device"
+                                IotViewModel.ConnectionState.CONNECTING -> "Attempting to connect…"
+                                IotViewModel.ConnectionState.ERROR      -> "Tap to retry"
+                                else                                    -> "Tap to sync device"
+                            },
+                            color = Color.Gray, fontSize = 13.sp
+                        )
+                        // Proximity chip — only shown while connected and BLE readings arrive.
+                        if (isBraceletConnected) {
+                            val dist = deviceDistance
+                            Spacer(Modifier.height(3.dp))
+                            Text(
+                                text = when {
+                                    dist == null -> "\uD83D\uDCE1 Calibrating distance…"
+                                    dist < 1f    -> "\uD83D\uDCCD Right next to you"
+                                    dist < 3f    -> "\uD83D\uDCCD %.1f m away".format(dist)
+                                    dist < 5f    -> "\u26A0\uFE0F %.1f m — getting far".format(dist)
+                                    else         -> "\uD83D\uDEA8 %.0f m — SOS will trigger!".format(dist)
+                                },
+                                color = when {
+                                    dist == null || dist < 3f -> Color(0xFF4CAF50)
+                                    dist < 5f                 -> Color(0xFFFFAA00)
+                                    else                      -> Color(0xFFFF4444)
+                                },
+                                fontSize = 11.sp,
+                                fontWeight = if (dist != null && dist >= 5f) FontWeight.Bold else FontWeight.Normal
+                            )
+                        }
                     }
 
                     Row(verticalAlignment = Alignment.CenterVertically) {
@@ -302,14 +376,29 @@ fun DashboardScreen(navController: NavController) {
                 dragHandle = { BottomSheetDefaults.DragHandle(color = Color.Gray) }
             ) {
                 SearchDeviceContent(
-                    isConnected = isBraceletConnected,
-                    onToggleConnection = { newState ->
-                        isBraceletConnected = newState
+                    connectionState = iotConnectionState,
+                    foundDevice     = iotFoundDevice,
+                    errorMessage    = iotError,
+                    onConnect       = { device ->
+                        iotViewModel.connect(device)
+                        // Do NOT dismiss here — keep the sheet open so the user can see
+                        // the CONNECTING spinner and any subsequent error message.
+                    },
+                    onDisconnect    = {
+                        iotViewModel.disconnect()
                         scope.launch { sheetState.hide() }.invokeOnCompletion {
                             if (!sheetState.isVisible) showSearchSheet = false
                         }
                     }
                 )
+
+                // Auto-dismiss the sheet once the socket is confirmed open.
+                LaunchedEffect(iotConnectionState) {
+                    if (iotConnectionState == IotViewModel.ConnectionState.CONNECTED && showSearchSheet) {
+                        sheetState.hide()
+                        showSearchSheet = false
+                    }
+                }
             }
         }
 
@@ -331,35 +420,153 @@ fun DashboardScreen(navController: NavController) {
 }
 
 @Composable
-fun SearchDeviceContent(isConnected: Boolean, onToggleConnection: (Boolean) -> Unit) {
-    var isScanning by remember { mutableStateOf(!isConnected) }
-    LaunchedEffect(Unit) { if (!isConnected) { delay(3000); isScanning = false } }
+fun SearchDeviceContent(
+    connectionState: IotViewModel.ConnectionState,
+    foundDevice: BluetoothDevice?,
+    errorMessage: String?,
+    onConnect: (BluetoothDevice) -> Unit,
+    onDisconnect: () -> Unit
+) {
+    val isConnected   = connectionState == IotViewModel.ConnectionState.CONNECTED
+    val isConnecting  = connectionState == IotViewModel.ConnectionState.CONNECTING
 
-    Column(modifier = Modifier.fillMaxWidth().padding(24.dp).navigationBarsPadding(), horizontalAlignment = Alignment.CenterHorizontally) {
-        Text(text = if (isConnected) "Device Details" else "Searching for Devices", color = Color.White, fontSize = 20.sp, fontWeight = FontWeight.Bold)
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(24.dp)
+            .navigationBarsPadding(),
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        Text(
+            text = if (isConnected) "Device Details" else "Pair ESP32 Wearable",
+            color = Color.White,
+            fontSize = 20.sp,
+            fontWeight = FontWeight.Bold
+        )
         Spacer(Modifier.height(8.dp))
-        Text(text = if (isConnected) "Your bracelet is currently active" else "Make sure your Asfalis Bracelet is nearby", color = Color.Gray, fontSize = 14.sp)
+        Text(
+            text = when {
+                isConnected  -> "Your ESP32 SOS device is active"
+                isConnecting -> "Registering device with backend…"
+                else         -> "Ensure \"ESP32_SOS_DEVICE\" is paired in Android Bluetooth Settings"
+            },
+            color = Color.Gray,
+            fontSize = 14.sp,
+            textAlign = TextAlign.Center
+        )
         Spacer(Modifier.height(32.dp))
-        if (isScanning) {
-            val infiniteTransition = rememberInfiniteTransition(label = "scan")
-            val scale by infiniteTransition.animateFloat(initialValue = 1f, targetValue = 1.4f, animationSpec = infiniteRepeatable(animation = tween(1000), repeatMode = RepeatMode.Reverse), label = "scale")
-            Box(contentAlignment = Alignment.Center) {
-                Box(modifier = Modifier.size(80.dp * scale).clip(CircleShape).background(Color(0xFFE10600).copy(0.1f)))
-                Icon(Icons.Default.BluetoothSearching, null, tint = Color(0xFFE10600), modifier = Modifier.size(48.dp))
-            }
-            Spacer(Modifier.height(32.dp))
-            LinearProgressIndicator(modifier = Modifier.fillMaxWidth().height(2.dp), color = Color(0xFFE10600), trackColor = Color.White.copy(0.1f))
-        } else {
-            Surface(modifier = Modifier.fillMaxWidth().clickable { onToggleConnection(!isConnected) }, color = Color.White.copy(0.05f), shape = RoundedCornerShape(16.dp)) {
-                Row(modifier = Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
-                    Icon(Icons.Outlined.Watch, null, tint = Color.White, modifier = Modifier.size(32.dp))
-                    Spacer(Modifier.width(16.dp))
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text("Asfalis Band v1.0", color = Color.White, fontWeight = FontWeight.SemiBold)
-                        Text(text = if (isConnected) "Connected" else "Strong Signal", color = if (isConnected) Color(0xFF00FF00) else Color.Gray, fontSize = 12.sp)
-                    }
-                    Text(text = if (isConnected) "Disconnect" else "Connect", color = Color(0xFFE10600), fontWeight = FontWeight.Bold)
+
+        when {
+            isConnecting -> {
+                // Pulsing scan animation while registering
+                val infiniteTransition = rememberInfiniteTransition(label = "iot_connect")
+                val scale by infiniteTransition.animateFloat(
+                    initialValue = 1f, targetValue = 1.4f,
+                    animationSpec = infiniteRepeatable(tween(1000), RepeatMode.Reverse),
+                    label = "scale"
+                )
+                Box(contentAlignment = Alignment.Center) {
+                    Box(modifier = Modifier.size(80.dp * scale).clip(CircleShape).background(Color(0xFFE10600).copy(0.1f)))
+                    Icon(Icons.AutoMirrored.Filled.BluetoothSearching, null, tint = Color(0xFFE10600), modifier = Modifier.size(48.dp))
                 }
+                Spacer(Modifier.height(16.dp))
+                Text(
+                    "Connecting to ESP32…",
+                    color = Color.Gray,
+                    fontSize = 13.sp
+                )
+                Spacer(Modifier.height(16.dp))
+                LinearProgressIndicator(
+                    modifier = Modifier.fillMaxWidth().height(2.dp),
+                    color = Color(0xFFE10600),
+                    trackColor = Color.White.copy(0.1f)
+                )
+                if (!errorMessage.isNullOrBlank()) {
+                    Spacer(Modifier.height(16.dp))
+                    Surface(
+                        modifier = Modifier.fillMaxWidth(),
+                        color = Color(0xFFFF4444).copy(0.1f),
+                        shape = RoundedCornerShape(12.dp)
+                    ) {
+                        Text(
+                            text = "⚠️ $errorMessage",
+                            color = Color(0xFFFF8888),
+                            fontSize = 13.sp,
+                            modifier = Modifier.padding(12.dp)
+                        )
+                    }
+                }
+            }
+
+            isConnected -> {
+                // Show connected device with Disconnect option
+                Surface(
+                    modifier = Modifier.fillMaxWidth(),
+                    color = Color.White.copy(0.05f),
+                    shape = RoundedCornerShape(16.dp)
+                ) {
+                    Row(modifier = Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Icon(Icons.Outlined.Watch, null, tint = Color(0xFFE10600), modifier = Modifier.size(32.dp))
+                        Spacer(Modifier.width(16.dp))
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text("ESP32 SOS Device", color = Color.White, fontWeight = FontWeight.SemiBold)
+                            Text("Connected", color = Color(0xFF00FF00), fontSize = 12.sp)
+                        }
+                        TextButton(onClick = onDisconnect) {
+                            Text("Disconnect", color = Color(0xFFE10600), fontWeight = FontWeight.Bold)
+                        }
+                    }
+                }
+            }
+
+            foundDevice != null -> {
+                // Device found in paired list — show Connect button
+                Surface(
+                    modifier = Modifier.fillMaxWidth(),
+                    color = Color.White.copy(0.05f),
+                    shape = RoundedCornerShape(16.dp)
+                ) {
+                    Row(modifier = Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Icon(Icons.Outlined.Watch, null, tint = Color.White, modifier = Modifier.size(32.dp))
+                        Spacer(Modifier.width(16.dp))
+                        Column(modifier = Modifier.weight(1f)) {
+                            @Suppress("MissingPermission")
+                            Text(foundDevice.name ?: "ESP32_SOS_DEVICE", color = Color.White, fontWeight = FontWeight.SemiBold)
+                            Text("Paired · tap to connect", color = Color.Gray, fontSize = 12.sp)
+                        }
+                        TextButton(onClick = { onConnect(foundDevice) }) {
+                            Text("Connect", color = Color(0xFFE10600), fontWeight = FontWeight.Bold)
+                        }
+                    }
+                }
+                // Show any error from a failed previous connect attempt
+                if (!errorMessage.isNullOrBlank()) {
+                    Spacer(Modifier.height(16.dp))
+                    Surface(
+                        modifier = Modifier.fillMaxWidth(),
+                        color = Color(0xFFFF4444).copy(0.1f),
+                        shape = RoundedCornerShape(12.dp)
+                    ) {
+                        Text(
+                            text = "⚠️ $errorMessage",
+                            color = Color(0xFFFF8888),
+                            fontSize = 13.sp,
+                            modifier = Modifier.padding(12.dp)
+                        )
+                    }
+                }
+            }
+
+            else -> {
+                // No device found or error
+                Icon(Icons.Outlined.Watch, null, tint = Color.Gray, modifier = Modifier.size(56.dp))
+                Spacer(Modifier.height(16.dp))
+                Text(
+                    text = errorMessage ?: "No wearable found",
+                    color = Color.Gray,
+                    fontSize = 14.sp,
+                    textAlign = TextAlign.Center
+                )
             }
         }
         Spacer(Modifier.height(40.dp))

@@ -23,11 +23,14 @@ import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.NavController
+import com.yourname.womensafety.data.IotAction
+import com.yourname.womensafety.data.IotEventBus
 import com.yourname.womensafety.data.SecurityPolicyManager
 import com.yourname.womensafety.data.network.dto.SosHistoryItem
 import com.yourname.womensafety.ui.components.SecureScreen
 import com.yourname.womensafety.ui.viewmodels.SosHistoryUiState
 import com.yourname.womensafety.ui.viewmodels.SosHistoryViewModel
+import kotlinx.coroutines.delay
 
 @Composable
 fun SOSHistoryScreen(navController: NavController) {
@@ -44,6 +47,17 @@ fun SOSHistoryScreen(navController: NavController) {
 
     LaunchedEffect(Unit) {
         historyViewModel.loadHistory()
+    }
+
+    // Re-load history when an IoT SOS event resolves so that wearable-triggered
+    // alerts appear immediately, even if the user is already on this screen.
+    LaunchedEffect(Unit) {
+        IotEventBus.events.collect { action ->
+            if (action is IotAction.Triggered || action is IotAction.Cancelled) {
+                delay(2_000L) // brief pause for the backend to record the event
+                historyViewModel.loadHistory()
+            }
+        }
     }
 
     Box(
@@ -150,7 +164,11 @@ fun SosHistoryCard(item: SosHistoryItem) {
 
             Column(modifier = Modifier.weight(1f)) {
                 Text(
-                    text = item.triggerType.replaceFirstChar { it.uppercase() },
+                    text = when (item.triggerType) {
+                        "iot_button" -> "IoT Button"
+                        "auto_sos"   -> "Auto SOS"
+                        else         -> item.triggerType.replaceFirstChar { it.uppercase() }
+                    },
                     color = Color.White,
                     fontSize = 16.sp,
                     fontWeight = FontWeight.SemiBold
@@ -167,15 +185,20 @@ fun SosHistoryCard(item: SosHistoryItem) {
 
             Surface(
                 color = when (item.status) {
-                    "cancelled" -> Color.Gray.copy(0.2f)
-                    else -> Color(0xFFE10600).copy(0.2f)
+                    // Resolved states — muted grey
+                    "cancelled", "expired" -> Color.Gray.copy(0.2f)
+                    // Active / dispatched states — red accent
+                    else                   -> Color(0xFFE10600).copy(0.2f)
                 },
                 shape = RoundedCornerShape(8.dp)
             ) {
                 Text(
                     text = item.status.uppercase(),
                     modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
-                    color = if (item.status == "cancelled") Color.Gray else Color(0xFFE10600),
+                    color = when (item.status) {
+                        "cancelled", "expired" -> Color.Gray
+                        else                   -> Color(0xFFE10600)
+                    },
                     fontSize = 10.sp,
                     fontWeight = FontWeight.Bold
                 )

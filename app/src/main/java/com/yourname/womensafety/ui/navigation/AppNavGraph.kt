@@ -22,6 +22,8 @@ import androidx.navigation.NavGraph.Companion.findStartDestination
 import androidx.navigation.NavType
 import androidx.navigation.compose.*
 import androidx.navigation.navArgument
+import com.yourname.womensafety.data.IotAction
+import com.yourname.womensafety.data.IotEventBus
 import com.yourname.womensafety.data.SessionManager
 import com.yourname.womensafety.data.network.RetrofitClient
 import com.yourname.womensafety.ui.screens.*
@@ -37,6 +39,8 @@ fun AppNavGraph() {
     val sessionExpired by SessionManager.sessionExpired.collectAsState()
     var showSessionExpiredDialog by remember { mutableStateOf(false) }
 
+    val iotSnackbarHostState = remember { SnackbarHostState() }
+
     // Watch for session expiry. Never interrupt an active SOS — the flag stays true
     // and the dialog will appear once the user navigates away from the SOS screen.
     LaunchedEffect(sessionExpired, currentRoute) {
@@ -48,6 +52,50 @@ fun AppNavGraph() {
             && currentRoute != "permissions"
         if (sessionExpired && safeToShow) {
             showSessionExpiredDialog = true
+        }
+    }
+
+    // ── IoT wearable events ─────────────────────────────────────────────
+    LaunchedEffect(Unit) {
+        IotEventBus.events.collect { action ->
+            when (action) {
+                is IotAction.Triggered -> {
+                    // Navigate to the SOS countdown screen exactly like a manual trigger.
+                    // launchSingleTop prevents stacking multiple SOS screens from rapid presses.
+                    navController.navigate(
+                        "sos_alert?triggerType=iot_button&alertId=${action.alertId}"
+                    ) { launchSingleTop = true }
+                }
+                is IotAction.Cancelled -> {
+                    // Navigation back to the dashboard is handled by SOSAlertScreen
+                    // itself via the wearableCancelled flag → onSafe().  Duplicating the
+                    // navigate() call here races with the screen's own handler and can
+                    // cause a spurious second navigation after the SOS screen is gone.
+                    // Only show a non-intrusive confirmation snackbar.
+                    iotSnackbarHostState.showSnackbar(
+                        message = action.message.ifEmpty { "SOS Cancelled via wearable" },
+                        duration = SnackbarDuration.Short
+                    )
+                }
+                IotAction.Connected -> {
+                    // Connection confirmed — IotViewModel already updated its state.
+                    // No navigation needed here.
+                }
+                IotAction.Disconnected -> {
+                    // Socket dropped; background service is retrying.
+                    // IotViewModel already moved state to CONNECTING — nothing to do in nav.
+                }
+                is IotAction.ProximityUpdate -> {
+                    // Distance updates are handled by IotViewModel — no navigation needed.
+                }
+                is IotAction.ConnectionFailed -> {
+                    // Device was off or out of range — show snackbar with the reason.
+                    iotSnackbarHostState.showSnackbar(
+                        message = action.reason,
+                        duration = SnackbarDuration.Long
+                    )
+                }
+            }
         }
     }
 
@@ -95,6 +143,16 @@ fun AppNavGraph() {
 
     Scaffold(
         containerColor = Color.Black,
+        snackbarHost = {
+            SnackbarHost(hostState = iotSnackbarHostState) { data ->
+                Snackbar(
+                    snackbarData = data,
+                    containerColor = Color(0xFF1A1A1A),
+                    contentColor = Color.White,
+                    shape = RoundedCornerShape(12.dp)
+                )
+            }
+        },
         bottomBar = {
             if (currentRoute in bottomBarScreens) {
                 NavigationBar(

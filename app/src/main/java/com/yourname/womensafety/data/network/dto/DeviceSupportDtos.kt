@@ -13,14 +13,18 @@ data class UpdateDeviceStatusRequest(
 )
 
 data class DeviceData(
-    @SerializedName("device_id") val deviceId: String,
-    @SerializedName("device_name") val deviceName: String,
-    @SerializedName("is_connected") val isConnected: Boolean,
-    @SerializedName("battery_level") val batteryLevel: Int? = null,
-    @SerializedName("firmware_version") val firmwareVersion: String? = null,
-    @SerializedName("signal_strength") val signalStrength: String? = null,
-    @SerializedName("last_seen") val lastSeen: String? = null
+    @SerializedName("device_id")             val deviceId: String,
+    @SerializedName("device_name")           val deviceName: String,
+    @SerializedName("device_mac")            val deviceMac: String? = null,
+    @SerializedName("is_connected")          val isConnected: Boolean,
+    @SerializedName("battery_level")         val batteryLevel: Int? = null,
+    @SerializedName("firmware_version")      val firmwareVersion: String? = null,
+    @SerializedName("signal_strength")       val signalStrength: String? = null,
+    @SerializedName("last_seen")             val lastSeen: String? = null,
+    @SerializedName("last_button_press_at")  val lastButtonPressAt: String? = null
 )
+
+// ── Help / Support ────────────────────────────────────────────────────────────
 
 data class FaqItem(
     @SerializedName("id") val id: Int,

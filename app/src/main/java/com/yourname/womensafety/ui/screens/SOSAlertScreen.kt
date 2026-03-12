@@ -27,6 +27,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.google.android.gms.location.LocationServices
+import com.yourname.womensafety.data.IotAction
+import com.yourname.womensafety.data.IotEventBus
 import com.yourname.womensafety.ui.viewmodels.SosViewModel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.suspendCancellableCoroutine
@@ -45,6 +47,11 @@ fun SOSAlertScreen(
     val uiState by sosViewModel.uiState.collectAsState()
     var ticks by remember { mutableIntStateOf(10) }
     var pendingHomeNavigation by remember { mutableStateOf(false) }
+    // Set to true when IotWearableManager cancels via wearable double-tap.
+    // IotWearableManager calls the cancel API directly (bypasses SosViewModel),
+    // so uiState.isCancelled never becomes true in that path — we need this flag
+    // to stop the countdown and prevent sendNow() from firing.
+    var wearableCancelled by remember { mutableStateOf(false) }
 
     // Determine if this is an automatic trigger
     val isAutomatic = triggerType != "manual"
@@ -71,13 +78,26 @@ fun SOSAlertScreen(
         }
     }
 
+    // Collect wearable cancel events.
+    // IotWearableManager bypasses SosViewModel, so uiState.isCancelled is never
+    // set in the wearable double-tap path. This LaunchedEffect sets wearableCancelled
+    // so the countdown stops immediately and sendNow() is not fired.
+    LaunchedEffect(Unit) {
+        IotEventBus.events.collect { action ->
+            if (action is IotAction.Cancelled) {
+                wearableCancelled = true
+            }
+        }
+    }
+
     // Auto-send when countdown reaches 0
     LaunchedEffect(Unit) {
-        while (ticks > 0) {
+        while (ticks > 0 && !uiState.isCancelled && !wearableCancelled) {
             delay(1000L)
             ticks--
         }
-        if (!uiState.isCancelled && !uiState.isSent && !uiState.isSending) {
+        // Only dispatch if we are genuinely un-cancelled at the moment ticks hit 0.
+        if (!uiState.isCancelled && !uiState.isSent && !uiState.isSending && !wearableCancelled) {
             sosViewModel.sendNow()
         }
     }
@@ -137,7 +157,16 @@ fun SOSAlertScreen(
     // Navigate back when cancelled or sent
     LaunchedEffect(uiState.isCancelled) {
         if (uiState.isCancelled) {
-            // Submit feedback for auto SOS: cancelled = false alarm
+            if (isAutomatic) {
+                uiState.alertId?.let { sosViewModel.submitFeedback(it, isFalseAlarm = true) }
+            }
+            onSafe()
+        }
+    }
+
+    // Navigate back when wearable double-tap cancel confirmed
+    LaunchedEffect(wearableCancelled) {
+        if (wearableCancelled) {
             if (isAutomatic) {
                 uiState.alertId?.let { sosViewModel.submitFeedback(it, isFalseAlarm = true) }
             }
@@ -279,7 +308,12 @@ fun SOSAlertScreen(
             // --- I'M SAFE BUTTON ---
             Button(
                 onClick = { sosViewModel.cancelSos() },
-                enabled = !uiState.isCancelled,
+                // Disabled while:
+                //  • isCancelled  — already resolved
+                //  • isSending    — send-now API is in-flight; wasSent would read false
+                //                   causing cancelSos() to call /cancel instead of /safe
+                //  • isCancelling — markUserSafe / cancelSos API already in-flight (double-tap guard)
+                enabled = !uiState.isCancelled && !uiState.isSending && !uiState.isCancelling,
                 modifier = Modifier
                     .fillMaxWidth()
                     .height(58.dp),
@@ -287,7 +321,15 @@ fun SOSAlertScreen(
                 shape = RoundedCornerShape(18.dp),
                 border = androidx.compose.foundation.BorderStroke(1.dp, Color.White.copy(0.1f))
             ) {
-                Text("I'M SAFE", color = Color.White, fontSize = 16.sp, fontWeight = FontWeight.Bold)
+                if (uiState.isCancelling) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(20.dp),
+                        color = Color.White,
+                        strokeWidth = 2.dp
+                    )
+                } else {
+                    Text("I'M SAFE", color = Color.White, fontSize = 16.sp, fontWeight = FontWeight.Bold)
+                }
             }
 
             Spacer(modifier = Modifier.height(14.dp))

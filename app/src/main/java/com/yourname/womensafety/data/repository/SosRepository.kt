@@ -18,15 +18,23 @@ class SosRepository(
         }
     }
 
-    suspend fun sendSosNow(alertId: String): NetworkResult<SosAlertData> {
+    suspend fun sendSosNow(alertId: String): NetworkResult<Unit> {
         return safeApiCall { sosApi.sendSosNow(SosSendNowRequest(alertId)) }
     }
 
-    suspend fun cancelSos(alertId: String): NetworkResult<Unit> {
+    /**
+     * Cancel an active SOS alert.
+     *
+     * [alertId] may be null — the backend will look up the caller's most-recent
+     * active countdown alert automatically, returning 200 / "no_active_countdown"
+     * if there is nothing to cancel.  This covers the IoT double-tap path where
+     * the app may have navigated away before the cancel arrives.
+     */
+    suspend fun cancelSos(alertId: String? = null): NetworkResult<Unit> {
         return safeApiCall { sosApi.cancelSos(SosCancelRequest(alertId)) }
     }
 
-    suspend fun markUserSafe(alertId: String): NetworkResult<Unit> {
+    suspend fun markUserSafe(alertId: String): NetworkResult<SosSafeData> {
         return safeApiCall { sosApi.markUserSafe(SosSafeRequest(alertId)) }
     }
 
