@@ -9,11 +9,11 @@ object ApiConstants {
     const val BASE_URL_PRODUCTION     = "https://asfalis-backend.onrender.com/api/"
 
     // Toggle this for dev vs prod
-    const val BASE_URL = BASE_URL_LOCAL_DEVICE
+    const val BASE_URL = BASE_URL_PRODUCTION
 
     // WebSocket
     const val WS_URL_LOCAL_EMULATOR = "http://10.0.2.2:5000"
     const val WS_URL_LOCAL_DEVICE   = "http://192.168.31.214:5000"
     const val WS_URL_PRODUCTION     = "https://asfalis-backend.onrender.com"
-    const val WS_URL = WS_URL_LOCAL_DEVICE
+    const val WS_URL = WS_URL_PRODUCTION
 }

@@ -34,9 +34,9 @@ import kotlin.math.sqrt
  *   If the backend returns prediction=1 (danger), emits the alert_id via [dangerDetected].
  *
  * Sensitivity → magnitude threshold mapping (m/s²):
- *   high   → 12.0
- *   medium → 18.0
- *   low    → 25.0
+ *   high   → 14.0 (derived from avg danger motion: 0.43g)
+ *   medium → 18.0 (derived from avg danger fall: 0.82g)
+ *   low    → 25.0 (reserve for very high impacts)
  */
 class AutoSosManager(
     private val context: Context,
@@ -94,7 +94,7 @@ class AutoSosManager(
             // --- DATA COLLECTION START ---
             val gravity = 9.80665f
             // Set label to 0 for SAFE data, 1 for DANGER data
-            Log.d("REAL_DATA_CSV", "${x/gravity},${y/gravity},${z/gravity},accelerometer,0,${System.currentTimeMillis()}")
+            Log.d("MEDIUM_DANGER", "${x/gravity},${y/gravity},${z/gravity},accelerometer,0,${System.currentTimeMillis()}")
             // --- DATA COLLECTION END ---
 
             // Add to rolling buffer
@@ -130,7 +130,7 @@ class AutoSosManager(
         isArmed = true
         activeSensorType = sensorType
         magnitudeThreshold = when (sensitivity.lowercase()) {
-            "high" -> 12f
+            "high" -> 14f
             "low"  -> 25f
             else   -> 18f
         }
