@@ -1,1 +1,4 @@
 /build
+.env
+backend-repo/
+*.apk

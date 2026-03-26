@@ -57,6 +57,9 @@ android {
     buildFeatures {
         compose = true
     }
+    androidResources {
+        noCompress.add("tflite")
+    }
 }
 
 
@@ -103,6 +106,10 @@ dependencies {
     implementation("com.google.maps.android:maps-compose:6.2.1")
     implementation("com.google.android.gms:play-services-maps:19.0.0")
     implementation("com.google.android.gms:play-services-location:21.3.0")
+
+    // === TENSORFLOW LITE ===
+    implementation("org.tensorflow:tensorflow-lite:2.14.0")
+    implementation("org.tensorflow:tensorflow-lite-support:0.4.4")
 
     testImplementation(libs.junit)
     androidTestImplementation(libs.androidx.junit)
