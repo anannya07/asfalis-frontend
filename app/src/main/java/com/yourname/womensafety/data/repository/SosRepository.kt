@@ -41,4 +41,12 @@ class SosRepository(
     suspend fun getSosHistory(): NetworkResult<List<SosHistoryItem>> {
         return safeApiCall { sosApi.getSosHistory() }
     }
+
+    suspend fun getSosCountdown(alertId: String): NetworkResult<SosCountdownData> {
+        return safeApiCall { sosApi.getSosCountdown(alertId) }
+    }
+
+    suspend fun testWhatsApp(toNumber: String, message: String): NetworkResult<Unit> {
+        return safeApiCall { sosApi.testWhatsApp(TestWhatsAppRequest(toNumber, message)) }
+    }
 }

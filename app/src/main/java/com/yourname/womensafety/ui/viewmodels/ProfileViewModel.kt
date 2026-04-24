@@ -70,6 +70,9 @@ class ProfileViewModel(
         viewModelScope.launch {
             authRepository.logout()
             userRepository.clearCache()
+            // Reset the Retrofit singleton so the next login gets a fresh OkHttpClient
+            // without any stale token state from the previous session.
+            com.yourname.womensafety.data.network.RetrofitClient.reset()
             _profileState.value = ProfileUiState.LoggedOut
         }
     }
@@ -80,6 +83,7 @@ class ProfileViewModel(
                 is NetworkResult.Success -> {
                     authRepository.logout()   // clears all local tokens
                     userRepository.clearCache()
+                    com.yourname.womensafety.data.network.RetrofitClient.reset()
                     _profileState.value = ProfileUiState.AccountDeleted
                 }
                 is NetworkResult.Error -> {

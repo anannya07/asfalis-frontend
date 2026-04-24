@@ -19,7 +19,10 @@ interface ProtectionApiService {
         @Body request: SensorDataRequest
     ): Response<ApiResponse<SensorAnalysisResult>>
 
-    /** ML danger prediction from a raw sensor window (40 [x,y,z] readings). */
+    /**
+     * ML danger prediction from a pre-windowed raw [x,y,z] reading list.
+     * Send 300 readings for best accuracy. GPS coordinates are optional but preferred.
+     */
     @POST("protection/predict")
     suspend fun predict(
         @Body request: SensorWindowRequest
@@ -35,8 +38,20 @@ interface ProtectionApiService {
         @Body request: FeedbackRequest
     ): Response<ApiResponse<Unit>>
 
+    /**
+     * Collect a labeled training window for ML retraining.
+     * Send the raw 300-point window — the backend extracts the 39 features.
+     * label: 0 = safe, 1 = danger
+     */
     @POST("protection/collect")
     suspend fun collectData(
         @Body request: SensorTrainingRequest
     ): Response<ApiResponse<Unit>>
+
+    /**
+     * Trigger background model retraining.
+     * Requires at least one SAFE and one DANGER window to have been collected.
+     */
+    @POST("protection/train-model")
+    suspend fun trainModel(): Response<ApiResponse<Unit>>
 }

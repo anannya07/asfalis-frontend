@@ -14,6 +14,7 @@ import com.yourname.womensafety.data.repository.UserRepository
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
+import com.google.firebase.messaging.FirebaseMessaging
 
 class DashboardViewModel : ViewModel() {
 
@@ -42,13 +43,25 @@ class DashboardViewModel : ViewModel() {
     val autoSosMonitoring: StateFlow<Boolean> = _autoSosMonitoring
 
     init {
-        // _autoSosMonitoring mirrors _isProtectionActive directly.
-        // The backend guards /predict with auto_sos_enabled, and we sync that flag
-        // via PUT /api/settings every time the shield is toggled.
-        viewModelScope.launch {
-            _isProtectionActive.collect { active ->
-                _autoSosMonitoring.value = active
+        // Sync FCM token on app launch as per POSTMAN_GUIDE Pro Tips
+        // Wrapped in try-catch to guarantee Dashboard rendering even if Firebase is disabled
+        try {
+            FirebaseMessaging.getInstance().token.addOnCompleteListener { task ->
+                if (task.isSuccessful) {
+                    val token = task.result
+                    if (!token.isNullOrEmpty()) {
+                        viewModelScope.launch {
+                            try {
+                                userRepository.updateFcmToken(token)
+                            } catch (e: Exception) { /* ignore network error */ }
+                        }
+                    }
+                }
             }
+        } catch (e: IllegalStateException) {
+            // FirebaseApp is not initialized (e.g. missing google-services.json)
+        } catch (e: Exception) {
+            // Failsafe catch-all
         }
     }
 
@@ -57,7 +70,10 @@ class DashboardViewModel : ViewModel() {
             try {
                 val response = protectionApi.getProtectionStatus()
                 if (response.isSuccessful && response.body()?.success == true) {
-                    _isProtectionActive.value = response.body()?.data?.isActive ?: _isProtectionActive.value
+                    val active = response.body()?.data?.isActive ?: _isProtectionActive.value
+                    _isProtectionActive.value = active
+                    // Explicitly sync autoSosMonitoring with the loaded state
+                    _autoSosMonitoring.value = active
                 }
             } catch (e: Exception) {
                 // Ignore — use local state
@@ -77,16 +93,21 @@ class DashboardViewModel : ViewModel() {
             try {
                 val response = protectionApi.toggleProtection(ToggleProtectionRequest(isActive))
                 if (response.isSuccessful && response.body()?.success == true) {
-                    _isProtectionActive.value = response.body()?.data?.isActive ?: isActive
+                    val confirmedActive = response.body()?.data?.isActive ?: isActive
+                    _isProtectionActive.value = confirmedActive
+                    // Only update autoSosMonitoring here, not via a collect{} observer,
+                    // to prevent the shield from flickering on cold start.
+                    _autoSosMonitoring.value = confirmedActive
                 } else {
+                    // Optimistic update on API failure
                     _isProtectionActive.value = isActive
+                    _autoSosMonitoring.value = isActive
                 }
             } catch (e: Exception) {
                 _isProtectionActive.value = isActive
+                _autoSosMonitoring.value = isActive
             }
             // Sync auto_sos_enabled to backend so POST /predict requests are accepted.
-            // Best-effort — the backend also guards the endpoint, so a failure here
-            // just means the ML prediction will return the "not enabled" soft response.
             try {
                 settingsRepository.updateSettings(
                     UpdateSettingsRequest(autoSosEnabled = _isProtectionActive.value)

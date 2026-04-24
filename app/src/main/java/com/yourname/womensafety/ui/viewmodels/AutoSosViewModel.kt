@@ -29,10 +29,11 @@ class AutoSosViewModel(app: Application) : AndroidViewModel(app) {
         app.getSystemService(Context.SENSOR_SERVICE) as SensorManager
 
     private val autoSosManager = AutoSosManager(
-        context = app.applicationContext,
-        sensorManager = sensorManager,
+        context              = app.applicationContext,
+        sensorManager        = sensorManager,
         protectionRepository = AppServiceLocator.protectionRepository,
-        scope = viewModelScope
+        sosRepository        = AppServiceLocator.sosRepository,
+        scope                = viewModelScope
     )
 
     /** True while sensor monitoring is active. */
@@ -109,14 +110,12 @@ class AutoSosViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     companion object {
-        val Factory: ViewModelProvider.Factory = object : ViewModelProvider.Factory {
-            @Suppress("UNCHECKED_CAST")
-            override fun <T : androidx.lifecycle.ViewModel> create(modelClass: Class<T>): T {
-                // AndroidViewModel requires Application — use the standard factory pattern
-                throw UnsupportedOperationException(
-                    "Use ViewModelProvider(owner, ViewModelProvider.AndroidViewModelFactory.getInstance(app))"
-                )
-            }
-        }
+        /**
+         * Correct factory for AndroidViewModel subclasses.
+         * Uses [ViewModelProvider.AndroidViewModelFactory] which passes the Application
+         * automatically — resolving the crash caused by a missing no-arg constructor.
+         */
+        fun factory(app: Application): ViewModelProvider.Factory =
+            ViewModelProvider.AndroidViewModelFactory.getInstance(app)
     }
 }

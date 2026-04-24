@@ -12,6 +12,16 @@ data class UpdateDeviceStatusRequest(
     @SerializedName("is_connected") val isConnected: Boolean
 )
 
+data class DeviceButtonEventRequest(
+    @SerializedName("device_mac") val deviceMac: String,
+    @SerializedName("latitude")   val latitude: Double? = null,
+    @SerializedName("longitude")  val longitude: Double? = null
+)
+
+data class DeviceAlertRequest(
+    @SerializedName("device_mac") val deviceMac: String
+)
+
 data class DeviceData(
     @SerializedName("device_id")             val deviceId: String,
     @SerializedName("device_name")           val deviceName: String,

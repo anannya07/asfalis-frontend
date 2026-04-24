@@ -45,9 +45,8 @@ fun SOSHistoryScreen(navController: NavController) {
     )
     val uiState by historyViewModel.uiState.collectAsStateWithLifecycle()
 
-    LaunchedEffect(Unit) {
-        historyViewModel.loadHistory()
-    }
+    // History is loaded immediately in SosHistoryViewModel.init{} — no LaunchedEffect needed.
+    // A second call here would cause two simultaneous API requests on screen open.
 
     // Re-load history when an IoT SOS event resolves so that wearable-triggered
     // alerts appear immediately, even if the user is already on this screen.
@@ -165,9 +164,12 @@ fun SosHistoryCard(item: SosHistoryItem) {
             Column(modifier = Modifier.weight(1f)) {
                 Text(
                     text = when (item.triggerType) {
-                        "iot_button" -> "IoT Button"
-                        "auto_sos"   -> "Auto SOS"
-                        else         -> item.triggerType.replaceFirstChar { it.uppercase() }
+                        "iot_button"  -> "IoT Button"
+                        "bracelet"    -> "Bracelet Alert"
+                        "auto_fall"   -> "Auto Danger Detected"
+                        "auto_shake"  -> "Auto Motion Detected"
+                        "manual"      -> "Manual SOS"
+                        else          -> item.triggerType.replaceFirstChar { it.uppercase() }
                     },
                     color = Color.White,
                     fontSize = 16.sp,

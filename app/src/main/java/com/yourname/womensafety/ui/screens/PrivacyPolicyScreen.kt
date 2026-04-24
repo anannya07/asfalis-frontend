@@ -88,7 +88,7 @@ fun PrivacyPolicyScreen(navController: NavController) {
 
                     Spacer(Modifier.height(24.dp))
 
-                    PolicySection("1. Introduction", "Welcome to Raksha. We are committed to protecting your personal information and your right to privacy. This Privacy Policy explains how we collect, use, disclose, and safeguard your information when you use our mobile application.")
+                    PolicySection("1. Introduction", "Welcome to Asfalis. We are committed to protecting your personal information and your right to privacy. This Privacy Policy explains how we collect, use, disclose, and safeguard your information when you use our mobile application.")
 
                     PolicySection("2. Information We Collect", "We collect the following types of information:")
                     BulletPoint("Location Data: Real-time GPS coordinates for emergency services")
@@ -112,7 +112,7 @@ fun PrivacyPolicyScreen(navController: NavController) {
 
                     PolicySection("8. Contact Us", "If you have any questions about this Privacy Policy, please contact us at:")
                     Text(
-                        "privacy@raksha.com",
+                        "privacy@asfalis.com",
                         color = Color(0xFFE10600),
                         fontSize = 15.sp,
                         fontWeight = FontWeight.SemiBold,

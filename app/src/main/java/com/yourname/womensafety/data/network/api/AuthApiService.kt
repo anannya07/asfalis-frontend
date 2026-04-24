@@ -12,7 +12,7 @@ interface AuthApiService {
     @POST("auth/register/phone")
     suspend fun registerWithPhone(
         @Body request: PhoneRegisterRequest
-    ): Response<ApiResponse<PhoneRegisterData>>
+    ): Response<PhoneRegisterData>
 
     /** Step 2: Verify the Twilio OTP the user received via SMS. Returns JWT tokens. */
     @POST("auth/verify-phone-otp")
@@ -28,13 +28,13 @@ interface AuthApiService {
     @POST("auth/handset-change/status")
     suspend fun handsetChangeStatus(
         @Body request: HandsetChangeStatusRequest
-    ): Response<ApiResponse<HandsetChangeStatusData>>
+    ): Response<HandsetChangeStatusData>
 
     /** Resend OTP — Twilio re-sends the SMS. Rate-limited 3×/15 min. */
     @POST("auth/resend-otp")
     suspend fun resendOtp(
         @Body request: ResendOtpRequest
-    ): Response<ApiResponse<ResendOtpData>>
+    ): Response<ResendOtpData>
 
     @POST("auth/refresh")
     suspend fun refreshToken(
@@ -47,13 +47,13 @@ interface AuthApiService {
     ): Response<ApiResponse<Unit>>
 
     @GET("auth/validate")
-    suspend fun validateToken(): Response<ApiResponse<ValidateData>>
+    suspend fun validateToken(): Response<ValidateData>
 
     /** Forgot password — Twilio sends reset OTP to phone. */
     @POST("auth/forgot-password")
     suspend fun forgotPassword(
         @Body request: ForgotPasswordRequest
-    ): Response<ApiResponse<ForgotPasswordData>>
+    ): Response<ForgotPasswordData>
 
     /** Reset password — verify Twilio OTP and set a new password. */
     @POST("auth/reset-password")
@@ -64,5 +64,5 @@ interface AuthApiService {
     @POST("auth/google")
     suspend fun googleSignIn(
         @Body request: GoogleSignInRequest
-    ): Response<ApiResponse<AuthData>>
+    ): Response<AuthData>
 }

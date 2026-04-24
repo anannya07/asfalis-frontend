@@ -574,8 +574,8 @@ class IotWearableManager(
     private suspend fun triggerProximitySos() {
         val location = getLastKnownLocation()
         when (val result = sosRepository.triggerSos(
-            triggerType = "proximity_sos",   // distinct from iot_button so backend/WhatsApp
-            latitude    = location?.latitude  ?: 0.0,   // message says "device moved >5 m away"
+            triggerType = "hardware_distress",
+            latitude    = location?.latitude  ?: 0.0,
             longitude   = location?.longitude ?: 0.0
         )) {
             is NetworkResult.Success -> {

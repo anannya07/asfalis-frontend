@@ -16,7 +16,7 @@ import kotlinx.coroutines.flow.map
 import java.util.UUID
 
 // Extension property for DataStore
-private val Context.dataStore: DataStore<Preferences> by preferencesDataStore(name = "raksha_auth")
+private val Context.dataStore: DataStore<Preferences> by preferencesDataStore(name = "asfalis_auth")
 
 class TokenManager(private val context: Context) {
 
@@ -130,15 +130,16 @@ class TokenManager(private val context: Context) {
             val refreshService = com.yourname.womensafety.data.network.RetrofitClient.createRefreshService()
             val response = refreshService.refreshToken(RefreshRequest(refreshToken))
             val body = response.body()
-            if (response.isSuccessful && body?.isSuccess == true && body.data != null) {
-                val data = body.data
+            // body is ApiResponse<RefreshData> — extract the nested data object
+            val refreshData = body?.data
+            if (response.isSuccessful && refreshData != null) {
                 context.dataStore.edit { prefs ->
-                    prefs[ACCESS_TOKEN] = data.accessToken
-                    if (data.refreshToken != null) prefs[REFRESH_TOKEN] = data.refreshToken
-                    if (data.expiresIn != null)
-                        prefs[TOKEN_EXPIRES_AT] = System.currentTimeMillis() + (data.expiresIn * 1000L)
+                    prefs[ACCESS_TOKEN] = refreshData.accessToken
+                    if (refreshData.refreshToken != null) prefs[REFRESH_TOKEN] = refreshData.refreshToken
+                    if (refreshData.expiresIn != null)
+                        prefs[TOKEN_EXPIRES_AT] = System.currentTimeMillis() + (refreshData.expiresIn * 1000L)
                 }
-                data.accessToken
+                refreshData.accessToken
             } else {
                 null
             }
