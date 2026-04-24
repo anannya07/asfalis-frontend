@@ -1,6 +1,6 @@
 package com.yourname.womensafety.ui.screens
 
-import android.location.Location
+import android.util.Log
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.core.*
 import androidx.compose.foundation.background
@@ -11,6 +11,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.GpsFixed
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -25,8 +26,9 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
-import com.google.android.gms.location.LocationServices
+import com.google.android.gms.tasks.CancellationTokenSource
 import com.yourname.womensafety.data.IotAction
 import com.yourname.womensafety.data.IotEventBus
 import com.yourname.womensafety.ui.viewmodels.SosViewModel
@@ -44,8 +46,10 @@ fun SOSAlertScreen(
 ) {
     val context = LocalContext.current
     val sosViewModel: SosViewModel = viewModel(factory = SosViewModel.Factory)
-    val uiState by sosViewModel.uiState.collectAsState()
+    val uiState by sosViewModel.uiState.collectAsStateWithLifecycle()
+    // Countdown starts ONLY after the backend confirms the alert (alertId set, isTriggering=false)
     var ticks by remember { mutableIntStateOf(10) }
+    var countdownStarted by remember { mutableStateOf(false) }
     var pendingHomeNavigation by remember { mutableStateOf(false) }
     // Set to true when IotWearableManager cancels via wearable double-tap.
     // IotWearableManager calls the cancel API directly (bypasses SosViewModel),
@@ -57,24 +61,13 @@ fun SOSAlertScreen(
     val isAutomatic = triggerType != "manual"
 
     // For Auto SOS: the alert was already created by predict API — init with existing alertId.
-    // For manual SOS: trigger a new alert with real GPS coordinates.
+    // For manual SOS: trigger a new alert. The ViewModel handles GPS internally to survive decomposition.
     LaunchedEffect(Unit) {
         if (existingAlertId != null) {
             sosViewModel.initWithExistingAlert(existingAlertId)
         } else {
-            val fusedClient = LocationServices.getFusedLocationProviderClient(context)
-            val location = try {
-                suspendCancellableCoroutine<Location?> { cont ->
-                    fusedClient.lastLocation
-                        .addOnSuccessListener { loc -> cont.resume(loc) }
-                        .addOnFailureListener { cont.resume(null) }
-                }
-            } catch (e: SecurityException) { null }
-            sosViewModel.triggerSos(
-                latitude = location?.latitude ?: 0.0,
-                longitude = location?.longitude ?: 0.0,
-                triggerType = triggerType
-            )
+            Log.d("SOSAlertScreen", "Triggering SOS: type=$triggerType")
+            sosViewModel.triggerSos(triggerType = triggerType)
         }
     }
 
@@ -90,15 +83,20 @@ fun SOSAlertScreen(
         }
     }
 
-    // Auto-send when countdown reaches 0
-    LaunchedEffect(Unit) {
-        while (ticks > 0 && !uiState.isCancelled && !wearableCancelled) {
-            delay(1000L)
-            ticks--
-        }
-        // Only dispatch if we are genuinely un-cancelled at the moment ticks hit 0.
-        if (!uiState.isCancelled && !uiState.isSent && !uiState.isSending && !wearableCancelled) {
-            sosViewModel.sendNow()
+    // Start countdown once trigger succeeds (alertId received, isTriggering=false)
+    // This prevents sendNow() from firing with a null alertId (race condition fix).
+    LaunchedEffect(uiState.alertId, uiState.isTriggering) {
+        if (uiState.alertId != null && !uiState.isTriggering && !countdownStarted) {
+            countdownStarted = true
+            Log.d("SOSAlertScreen", "Trigger confirmed alertId=${uiState.alertId} — starting countdown")
+            while (ticks > 0 && !uiState.isCancelled && !wearableCancelled) {
+                delay(1000L)
+                ticks--
+            }
+            // Only dispatch if we are genuinely un-cancelled at the moment ticks hit 0.
+            if (!uiState.isCancelled && !uiState.isSent && !uiState.isSending && !wearableCancelled) {
+                sosViewModel.sendNow()
+            }
         }
     }
 
@@ -106,18 +104,27 @@ fun SOSAlertScreen(
         val isActiveAndUnsent = !uiState.isCancelled && !uiState.isSent && !uiState.isSending
         val shouldSendBeforeLeaving = isActiveAndUnsent && uiState.alertId != null
 
-        if (shouldSendBeforeLeaving) {
-            pendingHomeNavigation = true
-            sosViewModel.sendNow()
-        } else if (isActiveAndUnsent && uiState.alertId == null) {
-            // Trigger request is still in-flight. Wait for alertId, then dispatch before leaving.
-            pendingHomeNavigation = true
-        } else {
-            // Already sent or cancelled — submit feedback (auto SOS: real danger) then navigate
-            if (isAutomatic && uiState.isSent) {
-                uiState.alertId?.let { sosViewModel.submitFeedback(it, isFalseAlarm = false) }
+        when {
+            // Trigger still in-flight — abort it and go home safely
+            uiState.isTriggering || uiState.isConnectionTimeout -> {
+                sosViewModel.abortTrigger()
+                // isCancelled will become true via abortTrigger(), navigation handled by LaunchedEffect
             }
-            onSafe()
+            shouldSendBeforeLeaving -> {
+                pendingHomeNavigation = true
+                sosViewModel.sendNow()
+            }
+            isActiveAndUnsent && uiState.alertId == null -> {
+                // Trigger failed entirely — safe to exit
+                onSafe()
+            }
+            else -> {
+                // Already sent or cancelled — submit feedback then navigate
+                if (isAutomatic && uiState.isSent) {
+                    uiState.alertId?.let { sosViewModel.submitFeedback(it, isFalseAlarm = false) }
+                }
+                onSafe()
+            }
         }
     }
 
@@ -287,17 +294,22 @@ fun SOSAlertScreen(
 
             Spacer(modifier = Modifier.height(30.dp))
 
+            // --- STATUS TEXT ---
             Text(
                 text = when {
-                    uiState.isCancelled -> "False Alarm - Alert Cancelled"
-                    uiState.isSent -> "SOS Dispatched!"
-                    uiState.isSending || pendingHomeNavigation || ticks == 0 -> "Dispatching SOS..."
-                    else -> "SOS Pending..."
+                    uiState.isConnectionTimeout -> "⚠️ Server starting up… you can cancel safely"
+                    uiState.isTriggering        -> "Connecting to server..."
+                    uiState.isCancelled         -> "False Alarm — Alert Cancelled"
+                    uiState.isSent              -> "SOS Dispatched!"
+                    uiState.isSending || pendingHomeNavigation || (ticks == 0 && countdownStarted) -> "Dispatching SOS..."
+                    countdownStarted            -> "SOS Pending..."
+                    else                        -> "Connecting to server..."
                 },
                 color = when {
-                    uiState.isCancelled -> Color(0xFF4CAF50)
-                    uiState.isSent -> Color(0xFF00E676)
-                    else -> Color.White.copy(0.7f)
+                    uiState.isConnectionTimeout -> Color(0xFFFFAA00)
+                    uiState.isCancelled         -> Color(0xFF4CAF50)
+                    uiState.isSent              -> Color(0xFF00E676)
+                    else                        -> Color.White.copy(0.7f)
                 },
                 fontSize = 14.sp,
                 fontWeight = FontWeight.Medium
@@ -308,12 +320,11 @@ fun SOSAlertScreen(
             // --- I'M SAFE BUTTON ---
             Button(
                 onClick = { sosViewModel.cancelSos() },
-                // Disabled while:
-                //  • isCancelled  — already resolved
-                //  • isSending    — send-now API is in-flight; wasSent would read false
-                //                   causing cancelSos() to call /cancel instead of /safe
-                //  • isCancelling — markUserSafe / cancelSos API already in-flight (double-tap guard)
-                enabled = !uiState.isCancelled && !uiState.isSending && !uiState.isCancelling,
+                // Always enabled when connection timed out — user must never be trapped.
+                // Otherwise disabled while: isCancelled (already resolved), isSending (race condition guard),
+                // isCancelling (API already in-flight — double-tap guard)
+                enabled = uiState.isConnectionTimeout ||
+                    (!uiState.isCancelled && !uiState.isSending && !uiState.isCancelling),
                 modifier = Modifier
                     .fillMaxWidth()
                     .height(58.dp),
@@ -370,10 +381,24 @@ fun SOSAlertScreen(
                 Text("BACK TO HOME", fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
             }
 
-            // Error
+            // Error + Retry
             uiState.errorMessage?.let { msg ->
                 Spacer(Modifier.height(12.dp))
                 Text(msg, color = Color.Red, fontSize = 13.sp, textAlign = TextAlign.Center)
+                Spacer(Modifier.height(10.dp))
+                // Only show Retry for trigger-phase errors (no alertId yet)
+                if (uiState.alertId == null) {
+                    OutlinedButton(
+                        onClick = { sosViewModel.triggerSos(triggerType) },
+                        shape = RoundedCornerShape(12.dp),
+                        border = androidx.compose.foundation.BorderStroke(1.dp, Color.Red.copy(0.5f)),
+                        colors = ButtonDefaults.outlinedButtonColors(contentColor = Color.Red)
+                    ) {
+                        Icon(Icons.Default.Refresh, null, modifier = Modifier.size(16.dp))
+                        Spacer(Modifier.width(8.dp))
+                        Text("Retry", fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
+                    }
+                }
             }
         }
 

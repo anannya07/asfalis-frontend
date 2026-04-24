@@ -12,8 +12,12 @@ import android.util.Log
 import com.google.android.gms.location.LocationServices
 import com.google.android.gms.location.Priority
 import com.google.android.gms.tasks.CancellationTokenSource
+import com.yourname.womensafety.data.network.dto.SensorReading
 import com.yourname.womensafety.data.repository.NetworkResult
 import com.yourname.womensafety.data.repository.ProtectionRepository
+import com.yourname.womensafety.data.repository.SosRepository
+import com.yourname.womensafety.utils.FeatureExtractor
+import com.yourname.womensafety.utils.SOSDetector
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -25,65 +29,105 @@ import kotlin.coroutines.resume
 import kotlin.math.sqrt
 
 /**
- * AutoSosManager — Stage 1 + Stage 2 of the Auto SOS pipeline.
+ * AutoSosManager — Local ML-based Auto SOS pipeline.
  *
- * Stage 1 (on-device): reads accelerometer/gyroscope, checks magnitude against the
- *   user-configured threshold. Only readings that exceed the threshold trigger Stage 2.
+ * ### Architecture (Frontend-only inference, as per frontend_doc_updated.md)
  *
- * Stage 2 (backend): snapshots the rolling buffer and POSTs it to POST /api/protection/predict.
- *   If the backend returns prediction=1 (danger), emits the alert_id via [dangerDetected].
+ * Stage 1 — Sensor accumulation:
+ *   Reads accelerometer/gyroscope. Accumulates readings into a rolling 300-point buffer.
+ *   A magnitude pre-filter short-circuits: if peak magnitude never exceeds the threshold
+ *   in a window, no inference is attempted (saves battery/CPU).
  *
- * Sensitivity → magnitude threshold mapping (m/s²):
- *   high   → 14.0 (derived from avg danger motion: 0.43g)
- *   medium → 18.0 (derived from avg danger fall: 0.82g)
- *   low    → 25.0 (reserve for very high impacts)
+ * Stage 2 — Local ONNX inference:
+ *   Extracts the 17 statistical features via [FeatureExtractor] and feeds them into the
+ *   on-device LightGBM model ([SOSDetector.predictDanger]) via ONNX Runtime.
+ *   No sensor data is sent to the backend for prediction — the model lives entirely
+ *   in the APK assets.
+ *
+ * Stage 3 — Backend SOS trigger:
+ *   If the model's output probability >= 0.6 (threshold from model_metadata.json),
+ *   the app calls POST /sos/trigger (`trigger_type: auto_fall` or `auto_shake`).
+ *   This starts the 10-second countdown on the backend and surfaces the UI.
+ *
+ * Stage 4 — Training data sync (post-alert):
+ *   After the alert resolves (sent OR cancelled) the raw 300-point window is pushed to
+ *   POST /protection/collect with label=1 (danger, if sent) or label=0 (safe, if cancelled).
+ *   The backend extracts the 39 CSV features and stores the window for model retraining.
+ *
+ * Sensitivity → magnitude pre-filter threshold mapping (m/s²):
+ *   high   → 14.0  (avg danger motion: ~0.43 g)
+ *   medium → 18.0  (avg danger fall:   ~0.82 g)
+ *   low    → 25.0  (reserve for very high impacts)
  */
 class AutoSosManager(
     private val context: Context,
     private val sensorManager: SensorManager,
     private val protectionRepository: ProtectionRepository,
+    private val sosRepository: SosRepository,
     private val scope: CoroutineScope
 ) {
+    private val fusedLocationClient = LocationServices.getFusedLocationProviderClient(context)
+    private val sosDetector = SOSDetector(context.assets)
 
-    private val fusedLocationClient =
-        LocationServices.getFusedLocationProviderClient(context)
     companion object {
         private const val TAG = "AutoSosManager"
-        private const val WINDOW_SIZE = 40          // recommended reading count per window
-        private const val COOLDOWN_MS = 600_000L    // 10-minute cooldown after any Auto SOS trigger
+        /**
+         * Accumulate 300 readings per window (∼10 seconds @ 30 Hz).
+         * The LightGBM ONNX model is trained on exactly 300-point windows.
+         */
+        private const val WINDOW_SIZE = 300
+        /**
+         * Minimum number of high-magnitude readings inside a window before running inference.
+         * Reduced from 3 to 2 so brief sharp movements are still caught.
+         */
+        private const val MAGNITUDE_HIT_THRESHOLD = 2
+        /** 10-minute cooldown after any ML-triggered SOS to prevent duplicate alerts. */
+        private const val COOLDOWN_MS = 600_000L
     }
 
-    // Emits the alert_id whenever the backend declares danger (prediction = 1, sos_sent = true)
+    // ── Public events ────────────────────────────────────────────────────────
+
+    /** Emits when the on-device model detects Danger AND the backend confirms an alert. */
     private val _dangerDetected = MutableSharedFlow<DangerEvent>(extraBufferCapacity = 1)
     val dangerDetected: SharedFlow<DangerEvent> = _dangerDetected
 
-    // Emits Unit when the 10-minute cooldown begins (danger confirmed by backend)
+    /** Emits Unit when the 10-minute cooldown starts (after a confirmed danger detection). */
     private val _cooldownStarted = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
     val cooldownStarted: SharedFlow<Unit> = _cooldownStarted
 
     data class DangerEvent(
         val alertId: String,
-        /** "auto_fall" for accelerometer, "auto_shake" for gyroscope */
+        /** "auto_fall" (accelerometer) | "auto_shake" (gyroscope) */
         val triggerType: String
     )
 
-    private var magnitudeThreshold = 18f // default: medium
-    private var activeSensorType = "accelerometer"
+    // ── Internal state ───────────────────────────────────────────────────────
 
-    // Rolling window — protected only by single-thread sensor callback
-    private val rollingBuffer = ArrayDeque<List<Float>>(WINDOW_SIZE + 1)
-
-    private var isCooldownActive = false
-    private var isWindowBeingSent = false
-    private var cooldownJob: Job? = null
+    private var magnitudeThreshold = 18f
+    private var activeSensorType   = "accelerometer"
 
     /**
-     * True only while [start] has been called and [stop] has not.
-     * Checked inside [sendWindowToBackend] to prevent a late-arriving coroutine
-     * from sending sensor data after the user disarms the system.
-     * Declared @Volatile so writes from any thread are immediately visible.
+     * Rolling 300-reading buffer of raw [x, y, z] lists for TFLite input.
+     * Access only from the sensor callback thread.
      */
+    private val rollingBuffer = ArrayDeque<List<Float>>(WINDOW_SIZE + 1)
+
+    /**
+     * Parallel buffer of [SensorReading] (includes timestamps) kept in sync with
+     * [rollingBuffer] so we can push the raw window to /protection/collect after an alert.
+     */
+    private val rawReadingBuffer = ArrayDeque<SensorReading>(WINDOW_SIZE + 1)
+
+    /** Number of readings in the current window that exceeded the magnitude threshold. */
+    private var magnitudeHitCount = 0
+
+    private var isCooldownActive   = false
+    private var isWindowBeingSent  = false
+    private var cooldownJob: Job?  = null
+
     @Volatile private var isArmed = false
+
+    // ── Sensor listener ──────────────────────────────────────────────────────
 
     private val sensorListener = object : SensorEventListener {
         override fun onSensorChanged(event: SensorEvent) {
@@ -91,34 +135,49 @@ class AutoSosManager(
             val y = event.values[1]
             val z = event.values[2]
 
-            // --- DATA COLLECTION START ---
-            val gravity = 9.80665f
-            // Set label to 0 for SAFE data, 1 for DANGER data
-            Log.d("MEDIUM_DANGER", "${x/gravity},${y/gravity},${z/gravity},accelerometer,0,${System.currentTimeMillis()}")
-            // --- DATA COLLECTION END ---
+            // Maintain both buffer variants in lock-step
+            val triplet  = listOf(x, y, z)
+            val reading  = SensorReading(x, y, z, System.currentTimeMillis())
 
-            // Add to rolling buffer
-            if (rollingBuffer.size >= WINDOW_SIZE) rollingBuffer.removeFirst()
-            rollingBuffer.addLast(listOf(x, y, z))
-
-            // Stage 1: magnitude threshold guard
-            val magnitude = sqrt(x * x + y * y + z * z)
-            if (magnitude > magnitudeThreshold) {
-                Log.d(TAG, "Threshold exceeded: magnitude=%.2f > threshold=%.2f (%s) " .format(
-                    magnitude, magnitudeThreshold, activeSensorType
-                ) + "isArmed=$isArmed isCooldown=$isCooldownActive isSending=$isWindowBeingSent " +
-                    "bufferSize=${rollingBuffer.size}")
+            if (rollingBuffer.size >= WINDOW_SIZE) {
+                rollingBuffer.removeFirst()
+                rawReadingBuffer.removeFirst()
             }
-            if (magnitude > magnitudeThreshold && !isCooldownActive && !isWindowBeingSent && isArmed) {
-                if (rollingBuffer.size >= 3) {
-                    Log.w(TAG, "Stage 1 passed — sending ${rollingBuffer.size} readings to /predict")
-                    sendWindowToBackend(rollingBuffer.toList())
-                }
+            rollingBuffer.addLast(triplet)
+            rawReadingBuffer.addLast(reading)
+
+            // Magnitude pre-filter — lightweight gate before TFLite inference.
+            // Thresholds (m/s²): high=12, medium=15, low=20
+            // Earth gravity alone is ~9.8 m/s², so these catch deliberate shaking/impacts.
+            val magnitude = sqrt(x * x + y * y + z * z)
+            if (magnitude > 10f) {
+                // Log ALL readings above 10 m/s² so we can confirm sensor is firing
+                Log.v(TAG, "Magnitude=%.2f threshold=%.2f hits=$magnitudeHitCount armed=$isArmed cooldown=$isCooldownActive".format(
+                    magnitude, magnitudeThreshold))
+            }
+            if (magnitude > magnitudeThreshold) {
+                magnitudeHitCount++
+                Log.d(TAG, "Magnitude HIT #$magnitudeHitCount: %.2f > threshold %.2f".format(
+                    magnitude, magnitudeThreshold))
+            }
+
+            // Only run inference when a full window is accumulated AND enough readings
+            // exceed the threshold AND we are not already processing or in cooldown
+            if (rollingBuffer.size >= WINDOW_SIZE
+                && magnitudeHitCount >= MAGNITUDE_HIT_THRESHOLD
+                && !isCooldownActive
+                && !isWindowBeingSent
+                && isArmed
+            ) {
+                Log.w(TAG, "Stage 1 gate passed ($magnitudeHitCount hits) — running local ONNX inference")
+                runLocalInference(rollingBuffer.toList(), rawReadingBuffer.toList())
             }
         }
 
         override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) = Unit
     }
+
+    // ── Public API ───────────────────────────────────────────────────────────
 
     /**
      * Start monitoring sensors.
@@ -127,54 +186,174 @@ class AutoSosManager(
      * @param sensorType  "accelerometer" | "gyroscope"
      */
     fun start(sensitivity: String = "medium", sensorType: String = "accelerometer") {
-        isArmed = true
-        activeSensorType = sensorType
+        isArmed            = true
+        activeSensorType   = sensorType
+        // Thresholds are well above resting gravity (~9.8 m/s²) but catch deliberate shaking:
+        //   high   → 12.0 m/s²  (slight drop/shake ~1.2g)
+        //   medium → 15.0 m/s²  (moderate shake ~1.5g)
+        //   low    → 20.0 m/s²  (strong impact only ~2g)
         magnitudeThreshold = when (sensitivity.lowercase()) {
-            "high" -> 14f
-            "low"  -> 25f
-            else   -> 18f
+            "high" -> 12f
+            "low"  -> 20f
+            else   -> 15f
         }
 
         val sensorKind = if (sensorType == "gyroscope")
-            Sensor.TYPE_GYROSCOPE
-        else
-            Sensor.TYPE_ACCELEROMETER
-
+            Sensor.TYPE_GYROSCOPE else Sensor.TYPE_ACCELEROMETER
         val sensor = sensorManager.getDefaultSensor(sensorKind)
         if (sensor == null) {
-            Log.w(TAG, "Sensor not available on this device: $sensorType")
+            Log.w(TAG, "Sensor not available: $sensorType")
             return
         }
         sensorManager.registerListener(sensorListener, sensor, SensorManager.SENSOR_DELAY_GAME)
-        Log.d(TAG, "Started monitoring ($sensorType, sensitivity=$sensitivity, threshold=$magnitudeThreshold)")
+        Log.d(TAG, "Started ($sensorType, sensitivity=$sensitivity, threshold=$magnitudeThreshold m/s², windowSize=$WINDOW_SIZE, hitThreshold=$MAGNITUDE_HIT_THRESHOLD)")
     }
 
-    /** Stop monitoring and clear state. */
+    /** Stop monitoring sensors and clear all state. */
     fun stop() {
-        isArmed = false          // disarm first so any in-flight coroutine bails early
+        isArmed = false
         sensorManager.unregisterListener(sensorListener)
         rollingBuffer.clear()
-        isCooldownActive = false
-        isWindowBeingSent = false
+        rawReadingBuffer.clear()
+        magnitudeHitCount  = 0
+        isCooldownActive   = false
+        isWindowBeingSent  = false
         cooldownJob?.cancel()
+        sosDetector.close()  // Release ONNX session & environment
         Log.d(TAG, "Stopped monitoring")
     }
 
-    /** Called externally after an SOS alert is resolved to reset the cooldown. */
+    /** Called externally after an SOS alert is resolved to start the 10-min cooldown. */
     fun notifySosResolved() {
         startCooldown()
     }
 
-    // --- Internal ---
+    // ── Stage 2+3+4 logic ────────────────────────────────────────────────────
 
-    private data class LocationData(
-        val address: String?,
-        val latitude: Double?,
-        val longitude: Double?
-    )
+    /**
+     * Stage 2: Extract 17 features locally and run TFLite inference.
+     * Stage 3: If Danger, trigger POST /sos/trigger immediately.
+     * Stage 4: Push raw window to POST /protection/collect after alert resolves.
+     */
+    private fun runLocalInference(
+        snapshot: List<List<Float>>,
+        rawSnapshot: List<SensorReading>
+    ) {
+        isWindowBeingSent = true
+        magnitudeHitCount = 0   // reset for next window
+
+        scope.launch {
+            if (!isArmed) {
+                Log.w(TAG, "runLocalInference: system DISARMED — aborting")
+                isWindowBeingSent = false
+                return@launch
+            }
+
+            try {
+                // Stage 2 — Local TFLite inference (17 features)
+                val features    = FeatureExtractor.extract(snapshot, activeSensorType)
+                val probability = sosDetector.predictDanger(features)
+                val triggerType = if (activeSensorType == "gyroscope") "auto_shake" else "auto_fall"
+
+                Log.d(TAG, "ONNX: probability=%.4f threshold=%.2f sensorType=$activeSensorType".format(
+                    probability, SOSDetector.DANGER_THRESHOLD))
+
+                if (!sosDetector.shouldTriggerSOS(probability)) {
+                    Log.d(TAG, "Stage 2 — SAFE (probability=%.4f) — no action".format(probability))
+                    // Push safe window to backend for training data balance
+                    syncWindowToBackend(rawSnapshot, label = "safe", isSafe = true)
+                    return@launch
+                }
+
+                Log.w(TAG, "Stage 2 — DANGER (probability=%.4f) — triggering SOS (type=$triggerType)".format(probability))
+
+                // Stage 3 — Trigger SOS on backend (creates countdown)
+                val loc = getCurrentLocation()
+                val result = sosRepository.triggerSos(
+                    triggerType = triggerType,
+                    latitude    = loc?.latitude  ?: 0.0,
+                    longitude   = loc?.longitude ?: 0.0
+                )
+
+                when (result) {
+                    is NetworkResult.Success -> {
+                        val alertId = result.data.alertId
+                        startCooldown()
+                        _cooldownStarted.emit(Unit)
+                        Log.w(TAG, "SOS triggered — alertId=$alertId type=$triggerType")
+                        _dangerDetected.emit(DangerEvent(alertId, triggerType))
+
+                        // Stage 4 — Sync DANGER window to backend for retraining.
+                        // We do this asynchronously so it does not block the UI countdown.
+                        syncWindowToBackend(rawSnapshot, label = "danger", isSafe = false)
+                    }
+                    is NetworkResult.Error -> {
+                        Log.e(TAG, "SOS trigger failed: [${result.code}] ${result.message}")
+                    }
+                    is NetworkResult.Loading -> Unit
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Inference/trigger error: ${e.message}", e)
+            } finally {
+                isWindowBeingSent = false
+                // Clear the buffer after every inference cycle so the next 300 readings
+                // form a fresh window (non-overlapping windows reduce duplicate triggers).
+                rollingBuffer.clear()
+                rawReadingBuffer.clear()
+            }
+        }
+    }
+
+    /**
+     * Stage 4 — Push the raw 300-point window to POST /protection/collect.
+     * The backend extracts the 39 statistical features and stores the labelled window.
+     *
+     * @param label   0 = safe, 1 = danger
+     * @param isSafe  Used to choose the motion description annotation.
+     */
+    private fun syncWindowToBackend(
+        rawSnapshot: List<SensorReading>,
+        label: String,
+        isSafe: Boolean
+    ) {
+        scope.launch {
+            val desc = if (isSafe)
+                "SAFE — Automatic label by on-device model"
+            else
+                "DANGER — Auto-detected by on-device model (type=$activeSensorType)"
+            when (val result = protectionRepository.collectLabeledWindow(
+                window             = rawSnapshot,
+                label              = label,
+                datasetName        = activeSensorType,
+                motionDescription  = desc
+            )) {
+                is NetworkResult.Success ->
+                    Log.d(TAG, "Training window synced to backend: label=$label (${if (isSafe) "SAFE" else "DANGER"})")
+                is NetworkResult.Error ->
+                    Log.w(TAG, "Training window sync failed: [${result.code}] ${result.message}")
+                is NetworkResult.Loading -> Unit
+            }
+        }
+    }
+
+    // ── Cooldown ─────────────────────────────────────────────────────────────
+
+    private fun startCooldown(durationMs: Long = COOLDOWN_MS) {
+        isCooldownActive = true
+        cooldownJob?.cancel()
+        cooldownJob = scope.launch {
+            delay(durationMs)
+            isCooldownActive = false
+            Log.d(TAG, "Auto SOS cooldown expired — monitoring resumed")
+        }
+    }
+
+    // ── GPS helper ───────────────────────────────────────────────────────────
+
+    private data class LocationData(val latitude: Double, val longitude: Double)
 
     @SuppressLint("MissingPermission")
-    private suspend fun getCurrentLocation(): LocationData {
+    private suspend fun getCurrentLocation(): LocationData? {
         return try {
             val cts = CancellationTokenSource()
             val location = suspendCancellableCoroutine { cont ->
@@ -183,131 +362,11 @@ class AutoSosManager(
                     .addOnSuccessListener { loc -> cont.resume(loc) }
                     .addOnFailureListener { cont.resume(null) }
                 cont.invokeOnCancellation { cts.cancel() }
-            } ?: fusedLocationClient.lastLocation.let { task ->
-                // Fall back to lastLocation
-                suspendCancellableCoroutine { cont ->
-                    task.addOnSuccessListener { loc -> cont.resume(loc) }
-                        .addOnFailureListener { cont.resume(null) }
-                }
             }
-
-            if (location == null) return LocationData(null, null, null)
-            val lat = location.latitude
-            val lng = location.longitude
-
-            // Try to get a human-readable address via Geocoder
-            val address = if (Geocoder.isPresent()) {
-                try {
-                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                        suspendCancellableCoroutine { cont ->
-                            Geocoder(context).getFromLocation(lat, lng, 1) { addresses ->
-                                val a = addresses.firstOrNull()
-                                cont.resume(
-                                    if (a != null)
-                                        listOfNotNull(
-                                            a.thoroughfare,
-                                            a.locality,
-                                            a.adminArea
-                                        ).joinToString(", ").ifEmpty { null }
-                                    else null
-                                )
-                            }
-                        }
-                    } else {
-                        @Suppress("DEPRECATION")
-                        val addresses = Geocoder(context).getFromLocation(lat, lng, 1)
-                        val a = addresses?.firstOrNull()
-                        if (a != null)
-                            listOfNotNull(
-                                a.thoroughfare,
-                                a.locality,
-                                a.adminArea
-                            ).joinToString(", ").ifEmpty { null }
-                        else null
-                    }
-                } catch (e: Exception) { null }
-            } else null
-
-            LocationData(address, lat, lng)
+            if (location != null) LocationData(location.latitude, location.longitude) else null
         } catch (e: Exception) {
-            Log.w(TAG, "Could not get location: ${e.message}")
-            LocationData(null, null, null)
-        }
-    }
-
-    private fun sendWindowToBackend(snapshot: List<List<Float>>) {
-        isWindowBeingSent = true
-        scope.launch {
-            // Guard: the system may have been disarmed between the time the sensor
-            // callback fired and this coroutine started.  Bail out immediately.
-            if (!isArmed) {
-                Log.w(TAG, "sendWindowToBackend: system DISARMED — aborting (snapshot discarded)")
-                isWindowBeingSent = false
-                return@launch
-            }
-            Log.d(TAG, "Sending window (${snapshot.size} readings) to /predict — " +
-                    "sensorType=$activeSensorType threshold=$magnitudeThreshold m/s²")
-            try {
-                val loc = getCurrentLocation()
-                Log.d(TAG, "Location: address=${loc.address} lat=${loc.latitude} lng=${loc.longitude}")
-                when (val result = protectionRepository.predict(
-                    window = snapshot,
-                    sensorType = activeSensorType,
-                    location = loc.address,
-                    latitude = loc.latitude,
-                    longitude = loc.longitude
-                )) {
-                    is NetworkResult.Success -> {
-                        val pred = result.data
-                        Log.d(TAG, "Prediction: prediction=${pred.prediction} confidence=${pred.confidence} " +
-                                "sos_sent=${pred.sosSent} alertId=${pred.alertId} " +
-                                "message='${pred.message}' isArmed=$isArmed")
-                        if (pred.sosSent && pred.alertId != null) {
-                            if (!isArmed) {
-                                // System was disarmed while the network call was in-flight.
-                                // The backend already sent the SOS — log prominently for debugging.
-                                Log.e(TAG, "BUG: backend returned sosSent=true but system is DISARMED. " +
-                                        "alertId=${pred.alertId} triggerType=$activeSensorType " +
-                                        "— suppressing UI navigation to avoid phantom SOS.")
-                            } else {
-                                // Backend confirmed danger — start 10-min cooldown and emit events
-                                startCooldown()
-                                _cooldownStarted.emit(Unit)
-                                val triggerType = if (activeSensorType == "gyroscope") "auto_shake" else "auto_fall"
-                                Log.w(TAG, "Danger confirmed: alertId=${pred.alertId} triggerType=$triggerType")
-                                _dangerDetected.emit(DangerEvent(pred.alertId, triggerType))
-                            }
-                        } else if (pred.retryAfterSeconds != null && pred.retryAfterSeconds > 0) {
-                            // Rate-limited by backend — sync local cooldown to backend's remaining window
-                            val remainingMs = pred.retryAfterSeconds * 1_000L
-                            Log.d(TAG, "Rate-limited by backend — cooldown ${pred.retryAfterSeconds}s: ${pred.message}")
-                            startCooldown(remainingMs)
-                        } else if (pred.message?.contains("cooldown", ignoreCase = true) == true ||
-                                   pred.message?.contains("rate", ignoreCase = true) == true) {
-                            // Fallback: legacy cooldown message without retry_after_seconds
-                            startCooldown()
-                        }
-                    }
-                    is NetworkResult.Error -> {
-                        Log.e(TAG, "Predict failed: ${result.code} — ${result.message}")
-                    }
-                    is NetworkResult.Loading -> Unit
-                }
-            } finally {
-                isWindowBeingSent = false
-                // Clear buffer after sending so we don't re-send the same readings
-                rollingBuffer.clear()
-            }
-        }
-    }
-
-    private fun startCooldown(durationMs: Long = COOLDOWN_MS) {
-        isCooldownActive = true
-        cooldownJob?.cancel()
-        cooldownJob = scope.launch {
-            delay(durationMs)
-            isCooldownActive = false
-            Log.d(TAG, "Cooldown expired — resuming monitoring")
+            Log.w(TAG, "Location unavailable: ${e.message}")
+            null
         }
     }
 }

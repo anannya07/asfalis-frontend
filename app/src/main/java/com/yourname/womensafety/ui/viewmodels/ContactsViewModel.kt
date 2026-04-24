@@ -40,6 +40,11 @@ class ContactsViewModel(
     private val _pendingOtpVerification = MutableStateFlow<OtpVerificationData?>(null)
     val pendingOtpVerification: StateFlow<OtpVerificationData?> = _pendingOtpVerification
 
+    /** Load contacts immediately on ViewModel creation — no LaunchedEffect dependency. */
+    init {
+        loadContacts()
+    }
+
     fun loadContacts() {
         viewModelScope.launch {
             _isLoading.value = true

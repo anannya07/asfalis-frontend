@@ -1,6 +1,7 @@
 package com.yourname.womensafety.ui.screens
 
 import android.Manifest
+import android.app.Application
 import android.bluetooth.BluetoothDevice
 import android.os.Build
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -48,10 +49,14 @@ import kotlinx.coroutines.launch
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun DashboardScreen(navController: NavController) {
+    val context = LocalContext.current
+
     val dashboardViewModel: DashboardViewModel = viewModel(
         factory = DashboardViewModel.Factory
     )
-    val autoSosViewModel: AutoSosViewModel = viewModel()
+    val autoSosViewModel: AutoSosViewModel = viewModel(
+        factory = AutoSosViewModel.factory(context.applicationContext as Application)
+    )
     val iotViewModel: IotViewModel = viewModel(factory = IotViewModel.Factory)
 
     val isProtectionOn by dashboardViewModel.isProtectionActive.collectAsStateWithLifecycle()
@@ -69,7 +74,6 @@ fun DashboardScreen(navController: NavController) {
     val isIotConnecting     = iotConnectionState == IotViewModel.ConnectionState.CONNECTING
 
     val snackbarHostState = remember { SnackbarHostState() }
-    val context = LocalContext.current
 
     // Bluetooth runtime permission launcher (Android 12+)
     val btPermissions = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
@@ -134,6 +138,18 @@ fun DashboardScreen(navController: NavController) {
 
     val errorMessage by dashboardViewModel.errorMessage.collectAsStateWithLifecycle()
     val haptic = LocalHapticFeedback.current
+
+    // Show Dashboard errors (toggle failure, profile load failure) via Snackbar
+    LaunchedEffect(errorMessage) {
+        errorMessage?.let { msg ->
+            snackbarHostState.showSnackbar(
+                message = msg,
+                duration = SnackbarDuration.Short
+            )
+            dashboardViewModel.clearError()
+        }
+    }
+
     val infiniteTransition = rememberInfiniteTransition(label = "dashboard_anims")
 
     val rotation by infiniteTransition.animateFloat(

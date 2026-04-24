@@ -645,63 +645,85 @@ fun ContactApiItem(
         shape = RoundedCornerShape(18.dp),
         border = if (isEmergency) androidx.compose.foundation.BorderStroke(1.dp, Color.Red.copy(0.2f)) else null
     ) {
-        Row(modifier = Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
+        Row(
+            modifier = Modifier
+                .padding(16.dp)
+                .fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            // Avatar circle
             Box(
-                modifier = Modifier.size(48.dp).clip(CircleShape)
+                modifier = Modifier
+                    .size(48.dp)
+                    .clip(CircleShape)
                     .background(if (isEmergency) Color(0xFFC60000) else Color.White.copy(0.1f)),
                 contentAlignment = Alignment.Center
             ) {
                 Text(initials, color = Color.White, fontWeight = FontWeight.Bold)
             }
 
-            Spacer(Modifier.width(16.dp))
+            Spacer(Modifier.width(14.dp))
 
-            Column(modifier = Modifier.weight(1f)) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text(contact.name, color = Color.White, fontSize = 16.sp, fontWeight = FontWeight.Bold)
-                    Spacer(Modifier.width(8.dp))
-                    if (contact.isVerified) {
-                        Surface(
-                            color = Color(0xFF006400).copy(0.2f),
-                            shape = RoundedCornerShape(8.dp)
-                        ) {
-                            Text(
-                                "✓ Verified",
-                                color = Color(0xFF90EE90),
-                                fontSize = 9.sp,
-                                fontWeight = FontWeight.SemiBold,
-                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
-                            )
-                        }
-                    } else {
-                        Surface(
-                            color = Color(0xFFFF8800).copy(0.2f),
-                            shape = RoundedCornerShape(8.dp)
-                        ) {
-                            Text(
-                                "⚠️ Pending",
-                                color = Color(0xFFFFAA00),
-                                fontSize = 9.sp,
-                                fontWeight = FontWeight.SemiBold,
-                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
-                            )
-                        }
+            // Name + badge + phone + relationship  (fills available width)
+            Column(
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
+                // --- Row 1: Name + badge (single line, badge never wraps vertically) ---
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    Text(
+                        text = contact.name,
+                        color = Color.White,
+                        fontSize = 15.sp,
+                        fontWeight = FontWeight.Bold,
+                        modifier = Modifier.weight(1f, fill = false)
+                    )
+                    // Verified / Pending badge — fixed height so it NEVER stretches
+                    val badgeContainerColor = if (contact.isVerified)
+                        Color(0xFF1A4D1A) else Color(0xFF4D2E00)
+                    val badgeTextColor = if (contact.isVerified)
+                        Color(0xFF80FF80) else Color(0xFFFFAA00)
+                    val badgeLabel = if (contact.isVerified) "✓ Verified" else "⚠️ Pending"
+
+                    Surface(
+                        color = badgeContainerColor,
+                        shape = RoundedCornerShape(6.dp)
+                    ) {
+                        Text(
+                            text = badgeLabel,
+                            color = badgeTextColor,
+                            fontSize = 10.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            maxLines = 1,
+                            modifier = Modifier.padding(horizontal = 7.dp, vertical = 3.dp)
+                        )
                     }
                 }
-                Spacer(Modifier.height(4.dp))
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text(contact.phone, color = Color.Gray, fontSize = 13.sp)
-                    contact.relationship?.let {
-                        Spacer(Modifier.width(8.dp))
+
+                // --- Row 2: Phone + relationship chip ---
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Text(
+                        text = contact.phone,
+                        color = Color.Gray,
+                        fontSize = 13.sp
+                    )
+                    contact.relationship?.let { rel ->
                         Surface(
-                            color = if (isEmergency) Color.Red.copy(0.12f) else Color.White.copy(0.05f),
+                            color = if (isEmergency) Color.Red.copy(0.12f) else Color.White.copy(0.07f),
                             shape = RoundedCornerShape(12.dp)
                         ) {
                             Text(
-                                text = it,
-                                color = if (isEmergency) Color.Red else Color.Gray,
+                                text = rel,
+                                color = if (isEmergency) Color(0xFFFF8080) else Color.Gray,
                                 fontSize = 11.sp,
-                                fontWeight = FontWeight.SemiBold,
+                                fontWeight = FontWeight.Medium,
+                                maxLines = 1,
                                 modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
                             )
                         }
@@ -709,14 +731,29 @@ fun ContactApiItem(
                 }
             }
 
-            if (!isEmergency) {
-                IconButton(onClick = onSetPrimary, modifier = Modifier.size(32.dp)) {
-                    Icon(Icons.Default.Star, "Set Primary", tint = Color.White.copy(0.3f), modifier = Modifier.size(18.dp))
+            // Action buttons column — kept slim
+            Column(
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
+                if (!isEmergency) {
+                    IconButton(onClick = onSetPrimary, modifier = Modifier.size(34.dp)) {
+                        Icon(
+                            Icons.Default.Star,
+                            contentDescription = "Set Primary",
+                            tint = Color(0xFFFFD700).copy(0.5f),
+                            modifier = Modifier.size(18.dp)
+                        )
+                    }
                 }
-            }
-
-            IconButton(onClick = onDelete, modifier = Modifier.size(32.dp)) {
-                Icon(Icons.Default.Delete, "Delete", tint = Color.White.copy(0.2f), modifier = Modifier.size(20.dp))
+                IconButton(onClick = onDelete, modifier = Modifier.size(34.dp)) {
+                    Icon(
+                        Icons.Default.Delete,
+                        contentDescription = "Delete",
+                        tint = Color.White.copy(0.35f),
+                        modifier = Modifier.size(18.dp)
+                    )
+                }
             }
         }
     }

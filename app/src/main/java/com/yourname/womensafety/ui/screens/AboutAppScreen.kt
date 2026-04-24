@@ -111,7 +111,7 @@ fun AboutAppScreen(navController: NavController) {
 
             Spacer(Modifier.height(28.dp))
 
-            Text("Raksha", color = Color.White, fontSize = 32.sp, fontWeight = FontWeight.Bold)
+            Text("Asfalis", color = Color.White, fontSize = 32.sp, fontWeight = FontWeight.Bold)
             Text("Women Safety", color = Color(0xFF60A5FA), fontSize = 16.sp) // Light blueish gray
 
             Spacer(Modifier.height(32.dp))
@@ -124,7 +124,7 @@ fun AboutAppScreen(navController: NavController) {
                 modifier = Modifier.fillMaxWidth()
             ) {
                 Text(
-                    "Raksha is a personal safety companion designed to protect women using smart technology and real-time monitoring.",
+                    "Asfalis is a personal safety companion designed to protect women using smart technology and real-time monitoring.",
                     color = Color.White.copy(0.8f),
                     fontSize = 15.sp,
                     textAlign = TextAlign.Center,
@@ -138,7 +138,7 @@ fun AboutAppScreen(navController: NavController) {
             // --- Info Rows ---
             Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 AboutInfoRow("Version", "1.0.0")
-                AboutInfoRow("Developer", "Raksha Technologies")
+                AboutInfoRow("Developer", "Asfalis Technologies")
                 AboutInfoRow("Release Date", "January 2026")
                 AboutInfoRow("Platform", "Android")
             }
@@ -146,7 +146,7 @@ fun AboutAppScreen(navController: NavController) {
             Spacer(Modifier.height(48.dp))
 
             Text(
-                "© 2026 Raksha. All rights reserved.",
+                "© 2026 Asfalis. All rights reserved.",
                 color = Color.Gray,
                 fontSize = 12.sp,
                 textAlign = TextAlign.Center,

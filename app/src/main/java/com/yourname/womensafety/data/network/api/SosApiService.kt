@@ -28,4 +28,14 @@ interface SosApiService {
 
     @GET("sos/history")
     suspend fun getSosHistory(): Response<ApiResponse<List<SosHistoryItem>>>
+
+    @GET("sos/countdown/{alertId}")
+    suspend fun getSosCountdown(
+        @Path("alertId") alertId: String
+    ): Response<ApiResponse<SosCountdownData>>
+
+    @POST("sos/test-whatsapp")
+    suspend fun testWhatsApp(
+        @Body request: TestWhatsAppRequest
+    ): Response<ApiResponse<Unit>>
 }

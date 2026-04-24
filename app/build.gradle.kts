@@ -25,6 +25,9 @@ android {
         versionCode = 1
         versionName = "1.0"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+        ndk {
+            abiFilters.add("arm64-v8a")
+        }
     }
 
     signingConfigs {
@@ -38,7 +41,8 @@ android {
 
     buildTypes {
         release {
-            isMinifyEnabled = false
+            isMinifyEnabled = true
+            isShrinkResources = true
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
@@ -56,6 +60,17 @@ android {
     }
     buildFeatures {
         compose = true
+    }
+    androidResources {
+        noCompress.add("onnx")
+    }
+    packaging {
+        resources {
+            pickFirsts += setOf(
+                "META-INF/LICENSE",
+                "META-INF/NOTICE"
+            )
+        }
     }
 }
 
@@ -103,6 +118,9 @@ dependencies {
     implementation("com.google.maps.android:maps-compose:6.2.1")
     implementation("com.google.android.gms:play-services-maps:19.0.0")
     implementation("com.google.android.gms:play-services-location:21.3.0")
+
+    // === ONNX RUNTIME (replaces TFLite — runs LightGBM model) ===
+    implementation("com.microsoft.onnxruntime:onnxruntime-android:1.19.2")
 
     testImplementation(libs.junit)
     androidTestImplementation(libs.androidx.junit)

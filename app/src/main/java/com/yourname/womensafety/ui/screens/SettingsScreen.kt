@@ -33,7 +33,6 @@ fun SettingsScreen(navController: NavController) {
         factory = SettingsViewModel.Factory
     )
     val isLoading by settingsViewModel.isLoading.collectAsStateWithLifecycle()
-    val saveSuccess by settingsViewModel.saveSuccess.collectAsStateWithLifecycle()
     val errorMessage by settingsViewModel.errorMessage.collectAsStateWithLifecycle()
     val loadedSettings by settingsViewModel.settings.collectAsStateWithLifecycle()
 
@@ -44,16 +43,22 @@ fun SettingsScreen(navController: NavController) {
     }
     var autoSosEnabled by remember { mutableStateOf(false) }
 
-    // Populate local state when settings arrive from API
+    // Populate local state when settings arrive from API.
+    // Using loadedSettings != null as key ensures this seeds only once on first load,
+    // not on every recomposition — prevents the toggle fighting user input.
+    var settingsSeeded by remember { mutableStateOf(false) }
     LaunchedEffect(loadedSettings) {
-        loadedSettings?.let { s ->
-            sensitivity = when (s.shakeSensitivity) {
-                "low" -> "Low"
-                "high" -> "High"
-                else -> "Medium"
+        if (loadedSettings != null && !settingsSeeded) {
+            settingsSeeded = true
+            loadedSettings?.let { s ->
+                sensitivity = when (s.shakeSensitivity) {
+                    "low"  -> "Low"
+                    "high" -> "High"
+                    else   -> "Medium"
+                }
+                sosMessage = s.sosMessage
+                autoSosEnabled = s.autoSosEnabled
             }
-            sosMessage = s.sosMessage
-            autoSosEnabled = s.autoSosEnabled
         }
     }
 
@@ -62,9 +67,12 @@ fun SettingsScreen(navController: NavController) {
         settingsViewModel.loadSettings()
     }
 
-    // Pop back when saved successfully
-    LaunchedEffect(saveSuccess) {
-        if (saveSuccess) navController.popBackStack()
+    // Collect save success as a one-shot SharedFlow event.
+    // SharedFlow does NOT retain last value, so this never fires on screen re-entry.
+    LaunchedEffect(Unit) {
+        settingsViewModel.saveSuccess.collect {
+            navController.popBackStack()
+        }
     }
 
     val backgroundGradient = Brush.verticalGradient(

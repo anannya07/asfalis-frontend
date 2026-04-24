@@ -24,4 +24,14 @@ interface DeviceApiService {
     suspend fun removeDevice(
         @Path("id") deviceId: String
     ): Response<ApiResponse<Unit>>
+
+    @POST("device/button-event")
+    suspend fun sendButtonEvent(
+        @Body request: DeviceButtonEventRequest
+    ): Response<ApiResponse<Unit>>
+    
+    @POST("device/alert")
+    suspend fun sendDeviceAlert(
+        @Body request: DeviceAlertRequest
+    ): Response<ApiResponse<Unit>>
 }

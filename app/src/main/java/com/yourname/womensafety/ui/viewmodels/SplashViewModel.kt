@@ -30,29 +30,37 @@ class SplashViewModel(
             val permissionsGranted = tokenManager.arePermissionsGranted().first()
             val loggedIn = tokenManager.isLoggedIn().first()
 
+            // Navigate immediately based on local DataStore state — do NOT block on
+            // a network call during splash. Render cold-start can take 10-30 seconds
+            // which would leave the user stuck on the splash screen.
             val route = when {
-                !onboardingDone -> "onboarding"
+                !onboardingDone     -> "onboarding"
                 !permissionsGranted -> "permissions"
-                loggedIn -> {
-                    // Optionally validate the token is still fresh
-                    try {
-                        val result = authRepository.validateToken()
-                        if (result is NetworkResult.Error && result.code == "UNAUTHORIZED") {
-                            tokenManager.clearTokens()
-                            "login"
-                        } else {
-                            "dashboard"
-                        }
-                    } catch (e: Exception) {
-                        // Network error — keep user logged in for offline support
-                        "dashboard"
-                    }
-                }
-                else -> "login"
+                loggedIn            -> "dashboard"
+                else                -> "login"
             }
             _destination.value = SplashDestination(route)
+
+            // Silently validate the token in the background AFTER navigating.
+            // If the token is truly expired/invalid, AuthInterceptor will catch the
+            // 401 on the first real API call and trigger SessionManager.onSessionExpired()
+            // which forces the user back to login gracefully.
+            if (loggedIn) {
+                try {
+                    val result = authRepository.validateToken()
+                    if (result is NetworkResult.Error &&
+                        (result.code == "UNAUTHORIZED" || result.code == "TOKEN_INVALID")) {
+                        tokenManager.clearTokens()
+                        com.yourname.womensafety.data.SessionManager.onSessionExpired()
+                    }
+                } catch (_: Exception) {
+                    // Network error during background validation — keep user logged in.
+                    // The AuthInterceptor will handle any real auth failures on subsequent calls.
+                }
+            }
         }
     }
+
 
     companion object {
         val Factory: ViewModelProvider.Factory = object : ViewModelProvider.Factory {

@@ -30,7 +30,11 @@ class DeviceRepository(
         deviceApi.removeDevice(deviceId)
     }
 
-    // postButtonEvent() removed — /api/device/button-event is the legacy architecture.
-    // The app calls /api/sos/trigger and /api/sos/cancel directly via IotSosTracker.
-    // See IOT_FRONTEND_IMPLEMENTATION.md for the current flow.
+    suspend fun sendButtonEvent(deviceMac: String, latitude: Double? = null, longitude: Double? = null): NetworkResult<Unit> = safeApiCall {
+        deviceApi.sendButtonEvent(DeviceButtonEventRequest(deviceMac, latitude, longitude))
+    }
+
+    suspend fun sendDeviceAlert(deviceMac: String): NetworkResult<Unit> = safeApiCall {
+        deviceApi.sendDeviceAlert(DeviceAlertRequest(deviceMac))
+    }
 }
